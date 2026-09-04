@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+
+# Source data files are not part of this repo (large / not for distribution)
+*.csv
+*.docx
