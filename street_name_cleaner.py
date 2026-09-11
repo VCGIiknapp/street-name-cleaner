@@ -676,6 +676,24 @@ def parse_primary_remainder(
 #                               once in one workspace against different
 #                               address roles.
 #
+# Output naming mirrors the input: for every role parameter that's given an
+# attribute name, the output includes a `<that name>_Clean` attribute (e.g.
+# `PrimaryName="STREET_NAME"` produces `STREET_NAME_Clean`). `PrimaryName`,
+# `AddressNumber`, `Street_PreDirectional`, `Street_PostDirectional`,
+# `Street_PostType`, and `AddressSecondaryAddress` are *always* produced
+# this way -- falling back to their own parameter name (e.g.
+# `PrimaryName_Clean`) when that role wasn't directly configured -- so the
+# full breakdown is always available regardless of which tier of input was
+# used: supply a combined `PrimaryName` and you still get
+# `AddressNumber_Clean` / `Street_PreDirectional_Clean` / etc. back; supply
+# only granular fields and you still get a `PrimaryName_Clean` built from
+# them. There's also always a `StreetName_Clean` -- the bare street name
+# alone, with no directional or road type -- since it has no dedicated
+# input parameter of its own to mirror. `FullAddress_Clean` /
+# `PrimaryAddress_Clean` are the exception: since they're strictly combined
+# views, they're only produced when `FullAddress` / `PrimaryAddress` was
+# itself supplied.
+#
 # This module only standardizes address *numbers* and *street names* -- it
 # never inspects or cleans city, state, or zip/zip+4 values, beyond
 # recognizing and discarding a trailing city/state/zip tail on
@@ -776,14 +794,27 @@ def standardize_feature_attributes(
     Each parameter names one of those existing attributes; pass "" for
     whichever role doesn't apply to this feature type.
 
-    Outputs are a direct cleaning of whatever was actually supplied: the
-    combined `full_address` / `primary_address` keys are only
-    produced when `FullAddress` or `PrimaryAddress` was itself given (since
-    only then is a combined address actually being cleaned, rather than
-    invented from unrelated granular fields); otherwise the return value
-    holds only the cleaned building-block segments -- `secondary_address`
-    is always included when any secondary-role field was supplied, whichever
-    tier is otherwise in use -- optionally prefixed with
+    The output mirrors the input: for every role parameter that was given an
+    attribute name, the output includes a `<that name>_Clean` attribute
+    holding the cleaned value for that same role (e.g. `PrimaryName="STREET"`
+    produces `STREET_Clean`). `PrimaryName`, `AddressNumber`,
+    `Street_PreDirectional`, `Street_PostDirectional`, `Street_PostType`, and
+    `AddressSecondaryAddress` are *always* included in the output this way --
+    using their own parameter name (e.g. `PrimaryName_Clean`) as a fallback
+    whenever that particular role wasn't directly configured -- so the full
+    breakdown is available regardless of which tier of input was actually
+    used: supply a combined `PrimaryName` and you still get
+    `AddressNumber_Clean` / `Street_PreDirectional_Clean` / etc. back;
+    supply only the granular fields and you still get a `PrimaryName_Clean`
+    built from them. There's also always a `StreetName_Clean` -- the bare
+    street name alone, with no directional or road type -- since it has no
+    dedicated input parameter of its own to mirror. `FullAddress_Clean` /
+    `PrimaryAddress_Clean` are the exception: since they're strictly
+    combined views, they're only produced when `FullAddress` /
+    `PrimaryAddress` was itself supplied, rather than being invented a name
+    for when it wasn't.
+
+    Every output attribute name is optionally prefixed with
     `OutputAttributePrefix`, ready to be merged back onto the feature's
     attributes.
     """
@@ -798,13 +829,14 @@ def standardize_feature_attributes(
         _get(AddressSecondaryNumber_HighRange),
     )
 
-    combined_given = bool(FullAddress.strip() or PrimaryAddress.strip())
-    if combined_given:
+    if FullAddress.strip() or PrimaryAddress.strip():
         combined = _get(FullAddress) or _get(PrimaryAddress)
         blended_text = strip_city_state_zip(clean_whitespace(combined.upper().replace(".", "")))
-        blended = standardize_address(blended_text)
-        segments = dict(blended["parsed_segments"])
-        primary_address = segments.pop("primary_address") or ""
+        segments = standardize_address(blended_text)["parsed_segments"]
+        number, prefix_dir, name, road_type, suffix_dir = (
+            segments["address_number"], segments["prefix_directional"], segments["street_name"],
+            segments["road_type"], segments["suffix_directional"],
+        )
         if secondary_address is None:
             secondary_address = segments["secondary_address"]
     else:
@@ -814,24 +846,29 @@ def standardize_feature_attributes(
             _get(AddressNumber_Prefix), _get(AddressNumber_Suffix),
             _get(Street_PreDirectional), _get(Street_PostDirectional), _get(Street_PostType),
         )
-        primary_address = " ".join(part for part in (number, prefix_dir, name, road_type, suffix_dir) if part)
-        segments = {
-            "address_number": number,
-            "prefix_directional": prefix_dir,
-            "street_name": name,
-            "road_type": road_type,
-            "suffix_directional": suffix_dir,
-        }
 
-    segments["secondary_address"] = secondary_address
+    name_only = " ".join(part for part in (prefix_dir, name, road_type, suffix_dir) if part) or None
+    primary_address = " ".join(part for part in (number, prefix_dir, name, road_type, suffix_dir) if part) or None
+    full_address = primary_address
+    if secondary_address:
+        full_address = f"{primary_address}, {secondary_address}" if primary_address else secondary_address
 
-    flat = dict(segments)
-    if combined_given:
-        full_address = primary_address
-        if secondary_address:
-            full_address = f"{primary_address}, {secondary_address}" if primary_address else secondary_address
-        flat["primary_address"] = primary_address or None
-        flat["full_address"] = full_address or None
+    flat: Dict[str, Any] = {}
+
+    def emit(configured_name: str, canonical_name: str, value: Optional[str]) -> None:
+        flat[f"{(configured_name.strip() or canonical_name)}_Clean"] = value
+
+    if FullAddress.strip():
+        emit(FullAddress, "FullAddress", full_address)
+    if PrimaryAddress.strip():
+        emit(PrimaryAddress, "PrimaryAddress", primary_address)
+    emit(PrimaryName, "PrimaryName", name_only)
+    emit(AddressNumber, "AddressNumber", number)
+    emit(Street_PreDirectional, "Street_PreDirectional", prefix_dir)
+    emit(Street_PostDirectional, "Street_PostDirectional", suffix_dir)
+    emit(Street_PostType, "Street_PostType", road_type)
+    emit("", "StreetName", name)
+    emit(AddressSecondaryAddress, "AddressSecondaryAddress", secondary_address)
 
     if OutputAttributePrefix:
         flat = {f"{OutputAttributePrefix}{key}": value for key, value in flat.items()}
@@ -970,24 +1007,21 @@ if __name__ == "__main__":
     assert result["full_address"] == "3 EAST MAIN STREET N"
 
     # --- FME attribute-mapping wrapper ---------------------------------
-
-    def _join_primary_segments(out):
-        # Building-block-only input never produces full_address /
-        # primary_address (see standardize_feature_attributes's
-        # docstring), so tests on that path recombine the individual
-        # segments themselves to check the parsing was correct.
-        parts = (
-            out.get("address_number"),
-            out.get("prefix_directional"),
-            out.get("street_name"),
-            out.get("road_type"),
-            out.get("suffix_directional"),
-        )
-        return " ".join(part for part in parts if part)
+    #
+    # Output attribute names mirror whatever attribute name was configured
+    # for each role (e.g. PrimaryName="STREET_NAME" -> "STREET_NAME_Clean"),
+    # falling back to that role's own canonical name (e.g. "PrimaryName")
+    # when it wasn't directly configured. PrimaryName / AddressNumber /
+    # Street_PreDirectional / Street_PostDirectional / Street_PostType /
+    # AddressSecondaryAddress are *always* produced this way, regardless of
+    # which tier of input was actually used -- so a combined PrimaryName
+    # input still yields the full segment breakdown, and fully granular
+    # input still yields a constructed PrimaryName_Clean.
 
     # Three worked examples (see the README): a rural VT Route address, an
     # in-town address, and a camp-lot address with a number prefix. Each is
-    # exercised through all three levels of field availability.
+    # exercised through all three levels of field availability, checking
+    # both the combined result and the individual segment breakdown.
     worked_examples = [
         {
             "FullAddress": "2729 VT Route 114 S, Norton, VT 05907",
@@ -1000,6 +1034,12 @@ if __name__ == "__main__":
             "Street_PostDirectional": "South",
             "Street_PostType": "",
             "expected": "2729 VT ROUTE 114 S",
+            "expected_number": "2729",
+            "expected_name_only": "VT ROUTE 114 S",
+            "expected_street_name": "VT ROUTE 114",
+            "expected_prefix_dir": None,
+            "expected_road_type": None,
+            "expected_suffix_dir": "S",
         },
         {
             "FullAddress": "137 E Main St, Hyde Park, VT 05655",
@@ -1012,6 +1052,12 @@ if __name__ == "__main__":
             "Street_PostDirectional": "",
             "Street_PostType": "St",
             "expected": "137 EAST MAIN STREET",
+            "expected_number": "137",
+            "expected_name_only": "EAST MAIN STREET",
+            "expected_street_name": "MAIN",
+            "expected_prefix_dir": "EAST",
+            "expected_road_type": "STREET",
+            "expected_suffix_dir": None,
         },
         {
             "FullAddress": "H 5 Stonehedge Dr, South Burlington, VT 05403",
@@ -1024,25 +1070,57 @@ if __name__ == "__main__":
             "Street_PostDirectional": "",
             "Street_PostType": "Drive",
             "expected": "H5 STONEHEDGE DRIVE",
+            "expected_number": "H5",
+            "expected_name_only": "STONEHEDGE DRIVE",
+            "expected_street_name": "STONEHEDGE",
+            "expected_prefix_dir": None,
+            "expected_road_type": "DRIVE",
+            "expected_suffix_dir": None,
         },
     ]
 
+    def _assert_breakdown(out, ex, label):
+        assert out["PrimaryName_Clean"] == ex["expected_name_only"], (
+            f"{label} FAILED for {ex}: PrimaryName_Clean got {out.get('PrimaryName_Clean')!r}"
+        )
+        assert out["StreetName_Clean"] == ex["expected_street_name"], (
+            f"{label} FAILED for {ex}: StreetName_Clean got {out.get('StreetName_Clean')!r}"
+        )
+        assert out["AddressNumber_Clean"] == ex["expected_number"], (
+            f"{label} FAILED for {ex}: AddressNumber_Clean got {out.get('AddressNumber_Clean')!r}"
+        )
+        assert out["Street_PreDirectional_Clean"] == ex["expected_prefix_dir"], (
+            f"{label} FAILED for {ex}: Street_PreDirectional_Clean got {out.get('Street_PreDirectional_Clean')!r}"
+        )
+        assert out["Street_PostType_Clean"] == ex["expected_road_type"], (
+            f"{label} FAILED for {ex}: Street_PostType_Clean got {out.get('Street_PostType_Clean')!r}"
+        )
+        assert out["Street_PostDirectional_Clean"] == ex["expected_suffix_dir"], (
+            f"{label} FAILED for {ex}: Street_PostDirectional_Clean got {out.get('Street_PostDirectional_Clean')!r}"
+        )
+
     for ex in worked_examples:
         # Tier 1: FullAddress (city/state/zip tail dropped automatically).
+        # Configuring FullAddress alone still yields the full breakdown.
         out = standardize_feature_attributes({"F": ex["FullAddress"]}, FullAddress="F")
-        assert out["full_address"] == ex["expected"], (
-            f"FullAddress FAILED for {ex['FullAddress']!r}: got {out['full_address']!r}"
+        assert out["F_Clean"] == ex["expected"], (
+            f"FullAddress FAILED for {ex['FullAddress']!r}: got {out.get('F_Clean')!r}"
         )
+        assert "PrimaryAddress_Clean" not in out  # wasn't configured -- not fabricated
+        _assert_breakdown(out, ex, "FullAddress")
 
         # Tier 2: PrimaryAddress (no city/state/zip to begin with).
         out = standardize_feature_attributes({"P": ex["PrimaryAddress"]}, PrimaryAddress="P")
-        assert out["full_address"] == ex["expected"], (
-            f"PrimaryAddress FAILED for {ex['PrimaryAddress']!r}: got {out['full_address']!r}"
+        assert out["P_Clean"] == ex["expected"], (
+            f"PrimaryAddress FAILED for {ex['PrimaryAddress']!r}: got {out.get('P_Clean')!r}"
         )
+        assert "FullAddress_Clean" not in out
+        _assert_breakdown(out, ex, "PrimaryAddress")
 
         # Tier 3: individual building-block fields. No FullAddress/
-        # PrimaryAddress was given, so no combined key is produced --
-        # outputs are only a direct cleaning of the granular inputs.
+        # PrimaryAddress was given, so neither combined key is produced,
+        # but PrimaryName_Clean is still built from the granular pieces --
+        # using its own configured name here ("N").
         out = standardize_feature_attributes(
             {
                 "N": ex["PrimaryName"],
@@ -1061,53 +1139,58 @@ if __name__ == "__main__":
             Street_PostDirectional="POST",
             Street_PostType="TYPE",
         )
-        assert "full_address" not in out and "primary_address" not in out, (
-            f"Building blocks FAILED for {ex}: unexpected combined key in {out}"
-        )
-        assert _join_primary_segments(out) == ex["expected"], (
-            f"Building blocks FAILED for {ex}: got {out}"
-        )
+        assert "FullAddress_Clean" not in out and "PrimaryAddress_Clean" not in out
+        assert out["N_Clean"] == ex["expected_name_only"]
+        assert out["StreetName_Clean"] == ex["expected_street_name"]
+        assert out["NUM_Clean"] == ex["expected_number"]
+        assert out["PRE_Clean"] == ex["expected_prefix_dir"]
+        assert out["TYPE_Clean"] == ex["expected_road_type"]
+        assert out["POST_Clean"] == ex["expected_suffix_dir"]
         print(f"OK: {ex['expected']!r:30} <- FullAddress / PrimaryAddress / building blocks")
 
     # Full combined column, with a city/state/zip tail to strip and a
-    # secondary unit embedded within it.
+    # secondary unit embedded within it. Output mirrors the configured
+    # attribute name ("SITE_ADDRESS").
     out = standardize_feature_attributes(
         {"SITE_ADDRESS": "133 S Burlington St, Apt 4, South Burlington, VT 05403"},
         FullAddress="SITE_ADDRESS",
     )
-    assert out["full_address"] == "133 SOUTH BURLINGTON STREET, UNIT 4"
-    assert out["secondary_address"] == "UNIT 4"
+    assert out["SITE_ADDRESS_Clean"] == "133 SOUTH BURLINGTON STREET, UNIT 4"
+    assert out["AddressSecondaryAddress_Clean"] == "UNIT 4"
 
-    # Primary/secondary already split across two combined columns.
+    # Primary/secondary already split across two combined columns, with an
+    # output prefix applied to every attribute this call produces.
     out = standardize_feature_attributes(
         {"MAIL_PRIMARY": "88 South Hill Rd", "MAIL_UNIT": "Ste 2"},
         PrimaryAddress="MAIL_PRIMARY",
         AddressSecondaryAddress="MAIL_UNIT",
         OutputAttributePrefix="MAIL_STD_",
     )
-    assert out["MAIL_STD_full_address"] == "88 SOUTH HILL ROAD, UNIT 2"
-    assert out["MAIL_STD_road_type"] == "ROAD"
+    assert out["MAIL_STD_MAIL_PRIMARY_Clean"] == "88 SOUTH HILL ROAD"
+    assert out["MAIL_STD_MAIL_UNIT_Clean"] == "UNIT 2"
+    assert out["MAIL_STD_Street_PostType_Clean"] == "ROAD"
 
     # Address number preserved as a low/high range across two columns
-    # (e.g. a road-centerline segment), with no single AddressNumber. No
-    # combined column was given, so no combined key is produced.
+    # (e.g. a road-centerline segment), with no single AddressNumber --
+    # AddressNumber_Clean still falls back to its canonical name since the
+    # AddressNumber parameter itself wasn't configured.
     out = standardize_feature_attributes(
         {"LOW": "1", "HIGH": "5", "NAME": "Main St"},
         AddressNumber_LowRange="LOW",
         AddressNumber_HighRange="HIGH",
         PrimaryName="NAME",
     )
-    assert "full_address" not in out
-    assert out["address_number"] == "1-5"
-    assert _join_primary_segments(out) == "1-5 MAIN STREET"
+    assert "FullAddress_Clean" not in out and "PrimaryAddress_Clean" not in out
+    assert out["AddressNumber_Clean"] == "1-5"
+    assert out["NAME_Clean"] == "MAIN STREET"
 
     # Half-value number built from a split AddressNumber + AddressNumber_Suffix.
     out = standardize_feature_attributes(
         {"NUM": "33", "SUF": "1/2", "NAME": "Main St"},
         AddressNumber="NUM", AddressNumber_Suffix="SUF", PrimaryName="NAME",
     )
-    assert "full_address" not in out
-    assert _join_primary_segments(out) == "33 1/2 MAIN STREET"
+    assert out["NUM_Clean"] == "33 1/2"
+    assert out["NAME_Clean"] == "MAIN STREET"
 
     # A word that's also a valid road type (Hill, Lake, ...) but is really
     # part of the street name must not be stripped out just because
@@ -1118,15 +1201,15 @@ if __name__ == "__main__":
         {"NAME": "Canaan Hill", "NUM": "2896", "TYPE": "Rd"},
         PrimaryName="NAME", AddressNumber="NUM", Street_PostType="TYPE",
     )
-    assert out["street_name"] == "CANAAN HILL"
-    assert out["road_type"] == "ROAD"
+    assert out["StreetName_Clean"] == "CANAAN HILL"
+    assert out["TYPE_Clean"] == "ROAD"
 
     out = standardize_feature_attributes(
         {"NAME": "Lake Morey", "NUM": "10", "TYPE": "Rd"},
         PrimaryName="NAME", AddressNumber="NUM", Street_PostType="TYPE",
     )
-    assert out["street_name"] == "LAKE MOREY"
-    assert out["road_type"] == "ROAD"
+    assert out["StreetName_Clean"] == "LAKE MOREY"
+    assert out["TYPE_Clean"] == "ROAD"
 
     # ... but when the trailing word genuinely is a redundant duplicate of
     # the explicit road type (as opposed to coincidentally matching a
@@ -1137,8 +1220,8 @@ if __name__ == "__main__":
         PrimaryName="NAME", AddressNumber="NUM",
         Street_PreDirectional="PRE", Street_PostType="TYPE",
     )
-    assert out["street_name"] == "MAIN"
-    assert out["road_type"] == "STREET"
+    assert out["StreetName_Clean"] == "MAIN"
+    assert out["TYPE_Clean"] == "STREET"
 
     # The same ambiguity applies to a trailing directional *word* (e.g.
     # "West" in "Old West") -- it must not be stripped out as a suffix
@@ -1149,8 +1232,8 @@ if __name__ == "__main__":
         {"NAME": "Old West", "NUM": "123"},
         PrimaryName="NAME", AddressNumber="NUM",
     )
-    assert out["street_name"] == "OLD WEST"
-    assert out["suffix_directional"] is None
+    assert out["StreetName_Clean"] == "OLD WEST"
+    assert out["Street_PostDirectional_Clean"] is None
 
     # A single-letter abbreviation is still unambiguous and gets stripped
     # even with no Street_PostDirectional to confirm it.
@@ -1158,8 +1241,8 @@ if __name__ == "__main__":
         {"NAME": "Main St S", "NUM": "137"},
         PrimaryName="NAME", AddressNumber="NUM",
     )
-    assert out["street_name"] == "MAIN"
-    assert out["suffix_directional"] == "S"
+    assert out["StreetName_Clean"] == "MAIN"
+    assert out["Street_PostDirectional_Clean"] == "S"
 
     # ... and a trailing word that genuinely is a redundant duplicate of an
     # explicitly-given Street_PostDirectional is still dropped, same as the
@@ -1168,25 +1251,29 @@ if __name__ == "__main__":
         {"NAME": "Main St South", "NUM": "137", "POST": "South"},
         PrimaryName="NAME", AddressNumber="NUM", Street_PostDirectional="POST",
     )
-    assert out["street_name"] == "MAIN"
-    assert out["suffix_directional"] == "S"
+    assert out["StreetName_Clean"] == "MAIN"
+    assert out["POST_Clean"] == "S"
 
     # Secondary unit built from a split abbreviation + number range instead
-    # of one combined secondary-address column.
+    # of one combined secondary-address column -- canonical fallback name
+    # since AddressSecondaryAddress itself wasn't configured.
     out = standardize_feature_attributes(
         {"UNIT_TYPE": "Apt", "UNIT_LOW": "1", "UNIT_HIGH": "5"},
         AddressSecondaryAbbreviation="UNIT_TYPE",
         AddressSecondaryNumber_LowRange="UNIT_LOW",
         AddressSecondaryNumber_HighRange="UNIT_HIGH",
     )
-    assert out["secondary_address"] == "UNIT 1-5"
+    assert out["AddressSecondaryAddress_Clean"] == "UNIT 1-5"
 
     # No address-role attributes configured at all -> graceful empty
-    # result, never an error (no combination is a strict requirement), and
-    # no combined keys since nothing combined was ever supplied.
+    # result, never an error (no combination is a strict requirement).
+    # FullAddress_Clean / PrimaryAddress_Clean are never fabricated, but
+    # the always-on segments (using their canonical names) are still
+    # present, just holding None.
     out = standardize_feature_attributes({})
-    assert "full_address" not in out and "primary_address" not in out
-    assert out["address_number"] is None
-    assert out["secondary_address"] is None
+    assert "FullAddress_Clean" not in out and "PrimaryAddress_Clean" not in out
+    assert out["PrimaryName_Clean"] is None
+    assert out["AddressNumber_Clean"] is None
+    assert out["AddressSecondaryAddress_Clean"] is None
 
     print("\nAll assertions passed.")

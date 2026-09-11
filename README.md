@@ -165,7 +165,7 @@ class AddressCleaner(object):
             AddressSecondaryAbbreviation="",
             AddressSecondaryNumber_LowRange="",
             AddressSecondaryNumber_HighRange="",
-            OutputAttributePrefix="CLEAN_"       # (Optional) e.g., creates "CLEAN_full_address"
+            OutputAttributePrefix="CLEAN_"       # (Optional) e.g., creates "CLEAN_STREET_NAME_Clean"
         )
 
     def input(self, feature):
@@ -192,6 +192,33 @@ changes underneath it and there's no version pinning. Pin to a specific
 commit SHA in `GITHUB_RAW_URL` (instead of `master`) if you need a
 workspace's behavior to stay fixed over time.
 
+### Output naming
+
+Every output attribute name mirrors the attribute name you configured for
+that role, with `_Clean` appended -- e.g. `PrimaryName="STREET_NAME"`
+produces an output attribute called `STREET_NAME_Clean`. There's no fixed,
+generic schema to memorize; the output is named after *your* columns.
+
+**The full breakdown is always produced, regardless of which tier of input
+you used.** Supply a combined `FullAddress`, `PrimaryAddress`, or
+`PrimaryName` and you still get the individual pieces back
+(`AddressNumber_Clean`, `Street_PreDirectional_Clean`, `StreetName_Clean`,
+`Street_PostType_Clean`, `Street_PostDirectional_Clean`) -- parsed out
+automatically. Supply only the granular building-block fields and you still
+get a `PrimaryName_Clean` (and, if you gave any secondary-unit fields, an
+`AddressSecondaryAddress_Clean`) constructed from them. The only exception
+is `FullAddress_Clean` / `PrimaryAddress_Clean` themselves: since those are
+strictly *combined* views, they only appear when you actually configured
+`FullAddress` / `PrimaryAddress` -- there's no name to invent for a
+combined view you never asked for.
+
+For any of these always-on outputs, if you *did* directly configure that
+specific role (e.g. you have your own `AddressNumber` column), its output
+uses your configured name (`_Clean` appended) instead of the canonical
+fallback name. `StreetName_Clean` is the one exception that's always the
+canonical name, since there's no dedicated input parameter for "just the
+bare name" to mirror.
+
 ### Worked examples
 
 The three examples below are used consistently throughout this section --
@@ -201,20 +228,20 @@ example 1, 2, and 3 always refer to the same three real-world features:
 2. An in-town address: **`137 E Main St, Hyde Park, VT 05655`**
 3. A camp/lot address with a house-number prefix: **`H 5 Stonehedge Dr, South Burlington, VT 05403`**
 
-All three clean to the same result: `2729 VT ROUTE 114 S`, `137 EAST MAIN
-STREET`, and `H5 STONEHEDGE DRIVE`, respectively. **How that result is
-returned depends on which tier of input was used:**
+All three clean to the same combined result: `2729 VT ROUTE 114 S`, `137
+EAST MAIN STREET`, and `H5 STONEHEDGE DRIVE`, respectively -- and in every
+case, the full segment breakdown is available too:
 
-| Example | Tier 1 (`FullAddress`/`PrimaryAddress`) `full_address` | Tier 2 (building blocks) individual segments |
-| --- | --- | --- |
-| 1 | `2729 VT ROUTE 114 S` | `address_number`=`2729`, `street_name`=`VT ROUTE 114`, `suffix_directional`=`S` |
-| 2 | `137 EAST MAIN STREET` | `address_number`=`137`, `prefix_directional`=`EAST`, `street_name`=`MAIN`, `road_type`=`STREET` |
-| 3 | `H5 STONEHEDGE DRIVE` | `address_number`=`H5`, `street_name`=`STONEHEDGE`, `road_type`=`DRIVE` |
+| Example | Combined result (`FullAddress_Clean` / `PrimaryAddress_Clean` / configured `PrimaryName` output, whichever tier was used) | `AddressNumber_Clean` | `Street_PreDirectional_Clean` | `StreetName_Clean` | `Street_PostType_Clean` | `Street_PostDirectional_Clean` |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | `2729 VT ROUTE 114 S` | `2729` | *(none)* | `VT ROUTE 114` | *(none)* | `S` |
+| 2 | `137 EAST MAIN STREET` | `137` | `EAST` | `MAIN` | `STREET` | *(none)* |
+| 3 | `H5 STONEHEDGE DRIVE` | `H5` | *(none)* | `STONEHEDGE` | `DRIVE` | *(none)* |
 
-Tier 1 produces one combined `full_address` (and `primary_address`)
-attribute because a combined address was actually given as input. Tier 2
-never fabricates those combined attributes -- see "Outputs are only a
-direct cleaning of whatever was actually supplied" below.
+This full breakdown comes back whether you configured `FullAddress`,
+`PrimaryAddress`, or `PrimaryName` -- or, in reverse, whether you configured
+only the granular fields and let a `PrimaryName_Clean` be constructed from
+them.
 
 ### Parameters, in order
 
@@ -260,9 +287,9 @@ otherwise it's assumed to be part of the name and kept:
 
 | `PrimaryName` | `Street_PostType` | Result |
 | --- | --- | --- |
-| `Canaan Hill` | `Rd` | `street_name` = `CANAAN HILL`, `road_type` = `ROAD` |
-| `Lake Morey` | `Rd` | `street_name` = `LAKE MOREY`, `road_type` = `ROAD` |
-| `E Main St` | `St` | `street_name` = `MAIN`, `road_type` = `STREET` (redundant `St` dropped) |
+| `Canaan Hill` | `Rd` | `StreetName_Clean` = `CANAAN HILL`, `Street_PostType_Clean` = `ROAD` |
+| `Lake Morey` | `Rd` | `StreetName_Clean` = `LAKE MOREY`, `Street_PostType_Clean` = `ROAD` |
+| `E Main St` | `St` | `StreetName_Clean` = `MAIN`, `Street_PostType_Clean` = `STREET` (redundant `St` dropped) |
 
 **A directional word at the end of `PrimaryName` isn't always a suffix
 directional either.** The same logic applies to words like "North",
@@ -276,9 +303,9 @@ and kept:
 
 | `PrimaryName` | `Street_PostDirectional` | Result |
 | --- | --- | --- |
-| `Old West` | *(none)* | `street_name` = `OLD WEST`, `suffix_directional` = `None` |
-| `Main St S` | *(none)* | `street_name` = `MAIN`, `suffix_directional` = `S` (unambiguous abbreviation) |
-| `Main St South` | `South` | `street_name` = `MAIN`, `suffix_directional` = `S` (redundant `South` dropped) |
+| `Old West` | *(none)* | `StreetName_Clean` = `OLD WEST`, `Street_PostDirectional_Clean` = `None` |
+| `Main St S` | *(none)* | `StreetName_Clean` = `MAIN`, `Street_PostDirectional_Clean` = `S` (unambiguous abbreviation) |
+| `Main St South` | `South` | `StreetName_Clean` = `MAIN`, `Street_PostDirectional_Clean` = `S` (redundant `South` dropped) |
 
 **Secondary/unit address, independent of the above.** Follows the same
 combined-vs-split pattern; none of the three worked examples has a
@@ -298,33 +325,28 @@ secondary unit, so see the "Other examples" table below instead.
 | `OutputAttributePrefix` | Optional prefix applied to every attribute this transformer writes back (e.g. `MAIL_`), useful if the same transformer runs more than once in one workspace against different address roles. |
 
 A feature type with none of these configured simply yields an empty result
--- never an error.
-
-**Outputs are only a direct cleaning of whatever was actually supplied.**
-The combined `full_address` / `primary_address` attributes are
-only written back when `FullAddress` or `PrimaryAddress` was itself given --
-since only then is there an actual combined address being cleaned, rather
-than one invented out of unrelated individual fields. When only
-building-block fields (Tier 2) are supplied, the transformer writes back
-only the individual cleaned segments that correspond to what was given
-(`address_number`, `prefix_directional`, `street_name`,
-`road_type`, `suffix_directional`, and/or `secondary_address`)
--- it never fabricates a `full_address` or `primary_address` out
-of them. All output attribute names are optionally prefixed with
-`OutputAttributePrefix`.
+-- never an error. See "Output naming" above for the full rule; in short:
+`FullAddress_Clean` / `PrimaryAddress_Clean` only appear when you configured
+`FullAddress` / `PrimaryAddress`, but `PrimaryName_Clean`,
+`StreetName_Clean`, `AddressNumber_Clean`, `Street_PreDirectional_Clean`,
+`Street_PostDirectional_Clean`, `Street_PostType_Clean`, and
+`AddressSecondaryAddress_Clean` are always produced, named after whatever
+you configured for that role (or their own canonical name if you didn't).
 
 ### Other examples
 
-A few more combinations, to show individual fields in isolation:
+A few more combinations, to show individual fields in isolation. Output
+attribute names below assume the exact column names shown in the "Fields
+set" cell:
 
 | Scenario | Fields set | Result |
 | --- | --- | --- |
-| Full address with an embedded unit and a city/state/zip tail | `FullAddress="133 S Burlington St, Apt 4, South Burlington, VT 05403"` | `full_address` = `133 SOUTH BURLINGTON STREET, UNIT 4` (Tier 1 -- combined keys are produced) |
-| Primary + secondary as two combined columns, with an output prefix | `PrimaryAddress="88 South Hill Rd"`, `AddressSecondaryAddress="Ste 2"`, `OutputAttributePrefix="MAIL_STD_"` | `MAIL_STD_full_address` = `88 SOUTH HILL ROAD, UNIT 2` (every output attribute is prefixed with `MAIL_STD_`) |
-| Address-number range (road-centerline segment), building blocks only | `AddressNumber_LowRange="1"`, `AddressNumber_HighRange="5"`, `PrimaryName="Main St"` | `address_number` = `1-5`, `street_name` = `MAIN`, `road_type` = `STREET` -- no `full_address` or `primary_address` key at all (Tier 2 -- no combined input was given) |
-| Half-value number from a split `AddressNumber` + `AddressNumber_Suffix` | `AddressNumber="33"`, `AddressNumber_Suffix="1/2"`, `PrimaryName="Main St"` | `address_number` = `33 1/2` -- again, no combined key |
-| Secondary unit from a split abbreviation + range | `AddressSecondaryAbbreviation="Apt"`, `AddressSecondaryNumber_LowRange="1"`, `AddressSecondaryNumber_HighRange="5"` | `secondary_address` = `UNIT 1-5` |
-| No address-role parameters set at all | *(nothing)* | Every segment value is `None`, and no combined keys are present at all -- never an error |
+| Full address with an embedded unit and a city/state/zip tail | `FullAddress="SITE_ADDRESS"` = `"133 S Burlington St, Apt 4, South Burlington, VT 05403"` | `SITE_ADDRESS_Clean` = `133 SOUTH BURLINGTON STREET, UNIT 4`; `AddressSecondaryAddress_Clean` = `UNIT 4` |
+| Primary + secondary as two combined columns, with an output prefix | `PrimaryAddress="MAIL_PRIMARY"` = `"88 South Hill Rd"`, `AddressSecondaryAddress="MAIL_UNIT"` = `"Ste 2"`, `OutputAttributePrefix="MAIL_STD_"` | `MAIL_STD_MAIL_PRIMARY_Clean` = `88 SOUTH HILL ROAD`; `MAIL_STD_MAIL_UNIT_Clean` = `UNIT 2`; `MAIL_STD_Street_PostType_Clean` = `ROAD` (canonical name, since `Street_PostType` wasn't configured; every attribute gets the `MAIL_STD_` prefix) |
+| Address-number range (road-centerline segment), building blocks only | `AddressNumber_LowRange="1"`, `AddressNumber_HighRange="5"`, `PrimaryName="NAME"` = `"Main St"` | `AddressNumber_Clean` = `1-5` (canonical, since `AddressNumber` itself wasn't configured); `NAME_Clean` = `MAIN STREET` |
+| Half-value number from a split `AddressNumber` + `AddressNumber_Suffix` | `AddressNumber="NUM"` = `"33"`, `AddressNumber_Suffix="SUF"` = `"1/2"`, `PrimaryName="NAME"` = `"Main St"` | `NUM_Clean` = `33 1/2`; `NAME_Clean` = `MAIN STREET` |
+| Secondary unit from a split abbreviation + range | `AddressSecondaryAbbreviation="Apt"`, `AddressSecondaryNumber_LowRange="1"`, `AddressSecondaryNumber_HighRange="5"` | `AddressSecondaryAddress_Clean` = `UNIT 1-5` (canonical, since `AddressSecondaryAddress` itself wasn't configured) |
+| No address-role parameters set at all | *(nothing)* | `PrimaryName_Clean`, `StreetName_Clean`, `AddressNumber_Clean`, etc. are all present holding `None`; `FullAddress_Clean` / `PrimaryAddress_Clean` don't appear at all -- never an error |
 
 This module only standardizes address *numbers* and *street names*; it
 never inspects or cleans city, state, or zip/zip+4 values, beyond
