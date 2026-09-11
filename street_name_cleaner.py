@@ -12,8 +12,7 @@ reference CSV for Vermont, so the full breadth of real-world address
 variations in use statewide is baked into the lookup tables below rather
 than fetched each run.
 
-Intended to be imported as a library (e.g. from an FME Workspace Python
-Caller / Custom Transformer) to clean full, primary, and secondary address
+Intended to be imported as a libraryto clean full, primary, and secondary address
 columns via `standardize_address()`.
 """
 
@@ -29,8 +28,7 @@ from typing import Any, Dict, List, Optional
 # Street-type abbreviation -> full name. Built from USPS Publication 28
 # (Appendix C) plus every StreetSuffixAbbreviation observed in the VT USPS
 # ZIP+4 reference data, cross-checked against the St_PosTyp domain used by
-# the VCGI road centerline / address point / hydrant layers (which also
-# surfaced a few abbreviations, e.g. CIRS, not present in the USPS extract).
+# the VCGI road centerline / address point / hydrant layers.
 ROAD_TYPE_MAP: Dict[str, str] = {
     "ALY": "ALLEY", "ANX": "ANNEX", "AVE": "AVENUE", "BCH": "BEACH",
     "BLF": "BLUFF", "BLVD": "BOULEVARD", "BND": "BEND", "BR": "BRANCH",
@@ -64,7 +62,7 @@ ROAD_TYPE_MAP: Dict[str, str] = {
 # Allow already-expanded full words to pass through unchanged (idempotency).
 ROAD_TYPE_MAP.update({full: full for full in set(ROAD_TYPE_MAP.values())})
 
-# Non-highway address prefixes (rule 5). Highway-specific "Route"/"Rt"/"Rte"
+# Non-highway address prefixes. Highway-specific "Route"/"Rt"/"Rte"
 # handling is done separately in `standardize_highways` per rule 6.
 PREFIX_MAP: Dict[str, str] = {
     "RT": "ROUTE",
@@ -401,6 +399,130 @@ def standardize_address(raw_address: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# FME Form (PythonCaller) integration
+# ---------------------------------------------------------------------------
+#
+# Different input feature types name their address columns differently, and
+# not every dataset splits a full/primary/secondary address the same way (or
+# even has all three). Rather than hardcoding column names here, the source
+# attribute names are configured *in the FME workspace* by wiring this
+# module's `AddressCleaner` class into a PythonCaller transformer set to
+# "Class" mode:
+#
+#   Class or Function to Process Features: street_name_cleaner.AddressCleaner
+#
+# FME reads `AddressCleaner.__init__`'s parameters and exposes each one as a
+# transformer parameter, so the mapping is a dialog setting, not code:
+#
+#   full_address_attr      input attribute holding a full/combined address
+#                           string (e.g. "SITE_ADDRESS"), if this feature
+#                           type has one.
+#   primary_address_attr   input attribute holding just the primary/street
+#                           address, if the dataset keeps it separate from
+#                           the secondary/unit address.
+#   secondary_address_attr input attribute holding just the secondary/unit
+#                           address, if the dataset keeps it separate.
+#   output_attr_prefix     optional prefix applied to every attribute this
+#                           transformer writes back (e.g. "MAIL_"), useful
+#                           when the same transformer runs more than once in
+#                           one workspace against different address roles.
+#
+# Leave whichever of the three address-role parameters don't apply to a
+# given feature type blank; at least one must be set.
+
+def standardize_feature_attributes(
+    attributes: Dict[str, Any],
+    full_address_attr: str = "",
+    primary_address_attr: str = "",
+    secondary_address_attr: str = "",
+    output_attr_prefix: str = "",
+) -> Dict[str, Any]:
+    """Build the standardized-address output attributes for one feature.
+
+    `attributes` is a plain dict of the feature's existing attribute values.
+    `full_address_attr` / `primary_address_attr` / `secondary_address_attr`
+    name which of those existing attributes (if any) hold a full, primary,
+    and/or secondary address string; pass "" for whichever role doesn't
+    exist on this feature type. At least one must be set.
+
+    When only `full_address_attr` is set, that single string is run through
+    `standardize_address()` directly. When `primary_address_attr` and/or
+    `secondary_address_attr` are set instead, their values are joined back
+    into one string first (`standardize_address()` already knows how to
+    re-split a trailing unit/PO-Box designation out of combined text), so a
+    dataset that stores them as separate columns is handled the same way as
+    one that stores a single combined column.
+
+    Returns a flat dict -- `standardize_address()`'s two top-level keys plus
+    its `parsed_segments`, optionally prefixed with `output_attr_prefix` --
+    ready to be merged back onto the feature's attributes.
+    """
+    if not any(name.strip() for name in (full_address_attr, primary_address_attr, secondary_address_attr)):
+        raise ValueError(
+            "At least one of full_address_attr, primary_address_attr, or "
+            "secondary_address_attr must be set to the name of an existing "
+            "input attribute."
+        )
+
+    if full_address_attr.strip():
+        raw = attributes.get(full_address_attr) or ""
+    else:
+        parts = [
+            attributes.get(attr) or ""
+            for attr in (primary_address_attr, secondary_address_attr)
+            if attr.strip()
+        ]
+        raw = " ".join(part for part in parts if part)
+
+    result = standardize_address(raw)
+    flat = {"full_address_caps": result["full_address_caps"], "full_address_title": result["full_address_title"]}
+    flat.update(result["parsed_segments"])
+
+    if output_attr_prefix:
+        flat = {f"{output_attr_prefix}{key}": value for key, value in flat.items()}
+    return flat
+
+
+class AddressCleaner:
+    """FME PythonCaller "Class" transformer wrapping `standardize_address()`.
+
+    See the module-level comment above for how to wire this into a
+    PythonCaller and what each constructor parameter configures.
+    """
+
+    def __init__(
+        self,
+        full_address_attr: str = "",
+        primary_address_attr: str = "",
+        secondary_address_attr: str = "",
+        output_attr_prefix: str = "",
+    ) -> None:
+        self.full_address_attr = full_address_attr
+        self.primary_address_attr = primary_address_attr
+        self.secondary_address_attr = secondary_address_attr
+        self.output_attr_prefix = output_attr_prefix
+        # Fail at workspace startup if nothing was configured, rather than
+        # silently doing nothing on every feature.
+        standardize_feature_attributes({}, full_address_attr, primary_address_attr, secondary_address_attr)
+
+    def input(self, feature: Any) -> None:
+        attributes = {name: feature.getAttribute(name) for name in feature.getAllAttributeNames()}
+        output = standardize_feature_attributes(
+            attributes,
+            self.full_address_attr,
+            self.primary_address_attr,
+            self.secondary_address_attr,
+            self.output_attr_prefix,
+        )
+        for key, value in output.items():
+            feature.setAttribute(key, value)
+        self.pyoutput(feature)
+
+    def close(self) -> None:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Self-test
 # ---------------------------------------------------------------------------
 
@@ -450,5 +572,31 @@ if __name__ == "__main__":
     # Title Case output, incl. the "28A" alphanumeric-stays-capitalized rule.
     assert standardize_address("88 South Hill Rd   ")["full_address_title"] == "88 South Hill Road"
     assert standardize_address("28-A Main St")["parsed_segments"]["primary_address_title"] == "28A Main Street"
+
+    # --- FME attribute-mapping wrapper ---------------------------------
+    # Single combined column.
+    out = standardize_feature_attributes(
+        {"SITE_ADDRESS": "133 S Burlington St, Apt 4"},
+        full_address_attr="SITE_ADDRESS",
+    )
+    assert out["full_address_caps"] == "133 SOUTH BURLINGTON STREET, UNIT 4"
+    assert out["secondary_address_caps"] == "UNIT 4"
+
+    # Primary/secondary already split across two columns.
+    out = standardize_feature_attributes(
+        {"MAIL_PRIMARY": "88 South Hill Rd", "MAIL_UNIT": "Ste 2"},
+        primary_address_attr="MAIL_PRIMARY",
+        secondary_address_attr="MAIL_UNIT",
+        output_attr_prefix="MAIL_STD_",
+    )
+    assert out["MAIL_STD_full_address_caps"] == "88 SOUTH HILL ROAD, UNIT 2"
+    assert out["MAIL_STD_road_type_caps"] == "ROAD"
+
+    # Must configure at least one address-role attribute.
+    try:
+        standardize_feature_attributes({})
+        raise AssertionError("expected ValueError for unconfigured attribute mapping")
+    except ValueError:
+        pass
 
     print("\nAll assertions passed.")

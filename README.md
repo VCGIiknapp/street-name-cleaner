@@ -67,3 +67,37 @@ python street_name_cleaner.py
 
 Runs the module's built-in `assert`-based test suite covering documented
 edge cases.
+
+## Using from FME Form
+
+Different feature types name their address columns differently, and not
+every dataset splits a full/primary/secondary address the same way (or has
+all three at all). Rather than hardcoding column names, wire this module's
+`AddressCleaner` class into a **PythonCaller** transformer set to "Class"
+mode:
+
+```
+Class or Function to Process Features: street_name_cleaner.AddressCleaner
+```
+
+FME reads the class's constructor parameters and exposes each one as a
+transformer parameter, so the column mapping is a dialog setting, not code:
+
+| Parameter | Meaning |
+| --- | --- |
+| `full_address_attr` | Input attribute holding a full/combined address string (e.g. `SITE_ADDRESS`), if this feature type has one. |
+| `primary_address_attr` | Input attribute holding just the primary/street address, if the dataset keeps it separate from the unit. |
+| `secondary_address_attr` | Input attribute holding just the secondary/unit address, if the dataset keeps it separate. |
+| `output_attr_prefix` | Optional prefix applied to every output attribute (e.g. `MAIL_`), useful if the transformer runs more than once in one workspace against different address roles. |
+
+Leave whichever address-role parameters don't apply blank; at least one of
+`full_address_attr` / `primary_address_attr` / `secondary_address_attr` must
+be set, or the transformer raises an error at workspace startup. The
+transformer writes back `full_address_caps`, `full_address_title`, and every
+key from `standardize_address()`'s `parsed_segments` (optionally prefixed)
+onto each feature.
+
+The same logic is available outside of FME via
+`standardize_feature_attributes(attributes, ...)`, which takes a plain
+`dict` of attribute values and returns the flat output dict, for testing or
+use in other pipelines.
