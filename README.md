@@ -125,7 +125,8 @@ the address is assembled from these instead:
 | --- | --- | --- | --- | --- |
 | `PrimaryName` | The street portion after the address number. Always parsed the same way a combined string would be -- picking up its own prefix directional, route phrase, road type, and suffix directional -- so it can hold just the bare name (example 3) or the whole remainder (example 2). | `VT Route 114 S` | `E Main St` | `Stonehedge Drive` |
 | `AddressNumber` | A single house number. | `2729` | `137` | `5` |
-| `AddressNumber_LowRange` / `AddressNumber_HighRange` | Low/high end of an address-number range preserved in separate columns (e.g. a road-centerline segment); used when `AddressNumber` is blank. Not used in any of the three examples. | -- | -- | -- |
+| `AddressNumber_LowRange` | Low end of an address-number range, in its own column (e.g. a road-centerline segment); used when `AddressNumber` is blank. Not used in any of the three examples. | -- | -- | -- |
+| `AddressNumber_HighRange` | High end of that same range, in a second, separate column. Not used in any of the three examples. | -- | -- | -- |
 | `AddressNumber_Prefix` | A letter (or rural camp/lot word like "LOT"/"CABIN") immediately before the number, merged tight per rule 3 (`H` + `5` -> `H5`). | *(none)* | *(none)* | `H` |
 | `AddressNumber_Suffix` | A letter suffix on the number, merged tight the same way (e.g. `A` -> `...28A`), or `1/2` for a half value (kept with a space: `33 1/2`). | *(none)* | *(none)* | *(none)* |
 | `Street_PreDirectional` | e.g. `"E"`. | *(none)* | `E` | *(none)* |
@@ -147,7 +148,8 @@ secondary unit, so see the "Other examples" table below instead.
 | --- | --- |
 | `AddressSecondaryAddress` | A combined secondary/unit address, e.g. `"Apt 1"`. Highest priority for the secondary address; if set, the two parameters below are ignored. |
 | `AddressSecondaryAbbreviation` | e.g. `"Apt"`. |
-| `AddressSecondaryNumber_LowRange` / `AddressSecondaryNumber_HighRange` | Low/high end of a secondary-unit number range preserved in separate columns; used when `AddressSecondaryAddress` is blank. |
+| `AddressSecondaryNumber_LowRange` | Low end of a secondary-unit number range, in its own column; used when `AddressSecondaryAddress` is blank. |
+| `AddressSecondaryNumber_HighRange` | High end of that same range, in a second, separate column. |
 
 **Output.**
 
