@@ -566,15 +566,17 @@ def parse_primary_remainder(text: str) -> tuple[Optional[str], Optional[str], Op
 # Different input feature types name -- and split up -- their address
 # columns differently, so every address-role parameter below is optional and
 # independent; supply whichever ones exist on a given feature type and leave
-# the rest blank ("") -- there is no required combination. Wire this
-# module's `AddressCleaner` class into a PythonCaller transformer set to
-# "Class" mode:
+# the rest blank ("") -- there is no required combination.
 #
-#   Class or Function to Process Features: street_name_cleaner.AddressCleaner
-#
-# FME reads `AddressCleaner.__init__`'s parameters and exposes each one as a
-# transformer parameter, so the column mapping is a dialog setting, not code.
-# The parameters, in order, along with three examples of what each one holds
+# PythonCaller's "Class to Process Features" parameter does not expose a
+# class's __init__ arguments as transformer-dialog parameters -- there is no
+# such dialog. Instead, paste a small wrapper script directly into the
+# PythonCaller (see the README's "Using from FME Form" section for the exact
+# script) that downloads this module from GitHub at runtime and instantiates
+# `AddressCleaner` with the column-mapping arguments hardcoded as literal
+# strings in that pasted script; set "Class to Process Features" to
+# `AddressCleaner`, matching the wrapper class's name. The parameters, in
+# order, along with three examples of what each one holds
 # for the same three example features (a rural VT Route address, an in-town
 # address, and a camp-lot address with a number prefix):
 #

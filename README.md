@@ -107,19 +107,98 @@ primary/secondary into two columns, and some (like Vermont's E911 road
 centerline/address point data) split everything down to individual
 NENA/USPS fields, sometimes even preserving a low/high address-number range
 across two columns instead of a single house number, or a letter prefix on
-the house number itself (rural VT camp/lot numbering, e.g. "H 5"). Rather
-than hardcoding column names, wire this module's `AddressCleaner` class into
-a **PythonCaller** transformer set to "Class" mode:
+the house number itself (rural VT camp/lot numbering, e.g. "H 5"). Every
+address-role parameter below is optional and independent -- supply
+whichever ones exist on a given feature type and leave the rest blank;
+**there is no required combination.**
 
-```
-Class or Function to Process Features: street_name_cleaner.AddressCleaner
+### Setting it up in a PythonCaller
+
+A **PythonCaller** transformer's "Class to Process Features" parameter has
+no dialog for a class's constructor arguments -- there's no auto-generated
+per-parameter UI. Instead:
+
+1. Add a **PythonCaller** transformer and set its **Class to Process
+   Features** parameter to `AddressCleaner`.
+2. Paste the script below directly into the PythonCaller's script editor.
+3. Edit the quoted strings inside `DownloadedCleaner(...)` to your feature
+   type's actual attribute names (leave any you don't need as `""`).
+
+```python
+import urllib.request
+import sys
+import types
+import fme
+import fmeobjects
+
+# 1. Fetch the updated code from GitHub
+GITHUB_RAW_URL = "https://raw.githubusercontent.com/VCGIiknapp/street-name-cleaner/master/street_name_cleaner.py"
+
+try:
+    response = urllib.request.urlopen(GITHUB_RAW_URL)
+    script_code = response.read().decode('utf-8')
+except Exception as e:
+    raise RuntimeError(f"Failed to fetch street_name_cleaner.py from GitHub: {e}")
+
+# 2. Load the downloaded code into memory
+module_name = "street_name_cleaner"
+dynamic_module = types.ModuleType(module_name)
+sys.modules[module_name] = dynamic_module
+exec(script_code, dynamic_module.__dict__)
+
+# 3. Grab the downloaded class
+DownloadedCleaner = dynamic_module.AddressCleaner
+
+# 4. Create a local class that FME can use to map your granular attributes
+class AddressCleaner(object):
+    def __init__(self):
+        # ========================================================
+        # SET YOUR COLUMN NAMES HERE:
+        # Put your exact FME attribute names inside the quotes.
+        # Leave any that you don't need as empty strings ("").
+        # ========================================================
+        self.cleaner = DownloadedCleaner(
+            FullAddress="",                      # Example: "SITE_ADDRESS"
+            PrimaryAddress="",
+            PrimaryName="",                      # Example: "STREET_NAME"
+            AddressNumber="",                    # Example: "HOUSE_NUM"
+            AddressNumber_LowRange="",
+            AddressNumber_HighRange="",
+            AddressNumber_Prefix="",
+            AddressNumber_Suffix="",
+            Street_PreDirectional="",            # Example: "PRE_DIR"
+            Street_PostDirectional="",
+            Street_PostType="",                  # Example: "ROAD_TYPE"
+            AddressSecondaryAddress="",          # Example: "APT_UNIT"
+            AddressSecondaryAbbreviation="",
+            AddressSecondaryNumber_LowRange="",
+            AddressSecondaryNumber_HighRange="",
+            OutputAttributePrefix="CLEAN_"       # (Optional) e.g., creates "CLEAN_full_address_caps"
+        )
+
+    def input(self, feature):
+        self.cleaner.input(feature)
+
+    def close(self):
+        self.cleaner.close()
 ```
 
-FME reads the class's constructor parameters and exposes each one as a
-transformer parameter, so the column mapping is a dialog setting, not code.
-Every parameter is optional and independent -- supply whichever ones exist
-on a given feature type and leave the rest blank; **there is no required
-combination.**
+Because the repo is **private**, this only works if the FME engine running
+the workspace can authenticate to GitHub (e.g. a token embedded in the URL
+or a network/proxy configuration that already has access) -- a plain
+anonymous `urllib.request.urlopen()` against a private repo's raw URL will
+fail with an HTTP 404. If that's not set up, an equally valid alternative is
+to skip the download step entirely: copy `street_name_cleaner.py` onto the
+FME engine's Python path (or alongside the workspace) and `import
+street_name_cleaner` normally in step 2-3 above instead of fetching it from
+GitHub.
+
+Fetching the module fresh from GitHub on every run means workspaces always
+pick up the latest version of the standardization rules without needing to
+be edited -- but it also means a run's behavior can change if the repo
+changes underneath it and there's no version pinning. Pin to a specific
+commit SHA in `GITHUB_RAW_URL` (instead of `master`) if you need a
+workspace's behavior to stay fixed over time.
 
 ### Worked examples
 
