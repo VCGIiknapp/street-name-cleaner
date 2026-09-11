@@ -189,26 +189,62 @@ def extract_secondary_unit(text: str) -> tuple[str, Optional[str]]:
 # Address number parsing
 # ---------------------------------------------------------------------------
 
+# Rural VT camp/lot-style address-number prefixes seen in the VCGI address
+# point data's AddNum_Pre field (e.g. "H 5 Stonehedge Dr"), in addition to a
+# lone letter.
+_ADDRESS_NUMBER_PREFIX_WORDS = ("CABIN", "LEANTO", "LOT", "TENT", "SLL", "SLR", "SUL", "SUR")
+_ADDRESS_NUMBER_PREFIX_RE = re.compile(
+    r"^(?:[A-Z]|" + "|".join(_ADDRESS_NUMBER_PREFIX_WORDS) + r")\s+(?=\d)"
+)
+
+
+def _merge_address_number_parts(prefix: str, base: Optional[str], suffix: str) -> Optional[str]:
+    """Attach an address-number prefix (e.g. "H") and/or suffix (e.g. "A")
+    onto an already-normalized numeric core (e.g. "5", "33 1/2", "1-5").
+    A single letter merges directly onto the number with no space (rule 3,
+    e.g. "H5", "28A"), but a multi-letter prefix/suffix word (e.g. camp/lot
+    numbering like "LOT 5") and a half-value fraction keep their space."""
+    if not base:
+        return None
+    result = base
+
+    suffix = suffix.strip().upper().replace(".", "") if suffix else ""
+    if suffix:
+        result = f"{result}{suffix}" if re.match(r"^[A-Z]$", suffix) else f"{result} {suffix}"
+
+    prefix = prefix.strip().upper().replace(".", "") if prefix else ""
+    if prefix:
+        result = f"{prefix}{result}" if re.match(r"^[A-Z]$", prefix) else f"{prefix} {result}"
+
+    return result
+
+
 def extract_address_number(text: str) -> tuple[Optional[str], str]:
-    """Pull a leading house number off `text`, honoring half-value and
-    alphanumeric formatting rules. Returns (address_number, remainder)."""
+    """Pull a leading house number off `text`, honoring half-value,
+    alphanumeric, and camp/lot address-number-prefix (e.g. "H 5 Main St" ->
+    "H5") formatting rules. Returns (address_number, remainder)."""
+    prefix_match = _ADDRESS_NUMBER_PREFIX_RE.match(text)
+    prefix = prefix_match.group(0).strip() if prefix_match else ""
+    body = text[prefix_match.end():] if prefix_match else text
+
     # Half value, e.g. "33 1/2 Main St" -> "33 1/2"
-    match = re.match(r"^(\d+)\s+(\d+/\d+)\b\s*", text)
+    match = re.match(r"^(\d+)\s+(\d+/\d+)\b\s*", body)
     if match:
-        number = f"{match.group(1)} {match.group(2)}"
-        return number, text[match.end():]
+        number = _merge_address_number_parts(prefix, f"{match.group(1)} {match.group(2)}", "")
+        return number, body[match.end():]
 
     # Alphanumeric, e.g. "28-A" / "28 A" -> "28A". A lone N/S/E/W is never
     # merged in here since that's a directional word, not a unit letter.
-    match = re.match(r"^(\d+)[\s-]?([A-Za-z])\b\s*", text)
+    match = re.match(r"^(\d+)[\s-]?([A-Za-z])\b\s*", body)
     if match and match.group(2).upper() not in PREFIX_DIRECTIONAL_MAP:
-        number = f"{match.group(1)}{match.group(2).upper()}"
-        return number, text[match.end():]
+        number = _merge_address_number_parts(prefix, match.group(1), match.group(2))
+        return number, body[match.end():]
 
     # Plain number
-    match = re.match(r"^(\d+)\b\s*", text)
+    match = re.match(r"^(\d+)\b\s*", body)
     if match:
-        return match.group(1), text[match.end():]
+        number = _merge_address_number_parts(prefix, match.group(1), "")
+        return number, body[match.end():]
 
     return None, text
 
@@ -505,27 +541,22 @@ def combine_number_range(low: str, high: str) -> Optional[str]:
     return low_n or high_n
 
 
-def _process_bare_street_name(text: str) -> tuple[Optional[str], Optional[str]]:
-    """Expand ordinals, disambiguate a leading "ST" as "SAINT", and spell out
-    any embedded directional in a street name that is already known to be
-    free of its road type (supplied separately). Opportunistically detects a
-    trailing suffix directional too, for callers that don't have that as its
-    own separate field. Returns (street_name, suffix_directional)."""
+def parse_primary_remainder(text: str) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """Parse a blended `PrimaryName`-style string -- the part of a primary
+    address that comes after the address number, which may itself still
+    carry a leading prefix directional (e.g. "E Main St") and/or a
+    highway/route phrase, or an ordinary street name with a trailing road
+    type / suffix directional. Returns
+    (prefix_directional, street_name, road_type, suffix_directional)."""
     text = clean_whitespace((text or "").upper().replace(".", ""))
-    tokens = [t for t in text.split(" ") if t]
-    if not tokens:
-        return None, None
+    prefix_directional, remainder = parse_prefix_directional(text)
 
-    tokens = [expand_ordinal_token(t) for t in tokens]
-    suffix_directional, tokens = parse_suffix_directional(tokens)
+    route_phrase, route_rest = standardize_highways(remainder)
+    if route_phrase:
+        return prefix_directional, route_phrase, None, extract_trailing_directional(route_rest)
 
-    if tokens and tokens[0] == "ST":
-        tokens[0] = "SAINT"
-
-    tokens = [PREFIX_DIRECTIONAL_MAP.get(t, t) for t in tokens]
-
-    street_name = " ".join(tokens) if tokens else None
-    return street_name, suffix_directional
+    street_name, road_type, suffix_directional = parse_street_remainder(remainder)
+    return prefix_directional, street_name, road_type, suffix_directional
 
 
 # ---------------------------------------------------------------------------
@@ -533,7 +564,7 @@ def _process_bare_street_name(text: str) -> tuple[Optional[str], Optional[str]]:
 # ---------------------------------------------------------------------------
 #
 # Different input feature types name -- and split up -- their address
-# columns differently, so every address-role attribute below is optional and
+# columns differently, so every address-role parameter below is optional and
 # independent; supply whichever ones exist on a given feature type and leave
 # the rest blank ("") -- there is no required combination. Wire this
 # module's `AddressCleaner` class into a PythonCaller transformer set to
@@ -542,39 +573,57 @@ def _process_bare_street_name(text: str) -> tuple[Optional[str], Optional[str]]:
 #   Class or Function to Process Features: street_name_cleaner.AddressCleaner
 #
 # FME reads `AddressCleaner.__init__`'s parameters and exposes each one as a
-# transformer parameter, so the column mapping is a dialog setting, not code:
+# transformer parameter, so the column mapping is a dialog setting, not code.
+# The parameters, in order, along with three examples of what each one holds
+# for the same three example features (a rural VT Route address, an in-town
+# address, and a camp-lot address with a number prefix):
 #
-#   full_address_attr          A full/combined address string that may still
-#                               carry a trailing city/state/zip (e.g.
-#                               "3 E Main St N, South Burlington, VT 05403");
-#                               that tail is dropped automatically. Highest
-#                               priority: if set, every other primary-address
-#                               parameter below is ignored.
-#   primary_address_attr       A combined primary (street) address with no
-#                               city/state/zip, e.g. "3 E Main St N". Used
-#                               when `full_address_attr` is blank; if set, the
-#                               granular fields below are ignored.
-#   street_name_attr           Just the street name, e.g. "Main St" (may or
-#                               may not include the suffix -- see
-#                               `street_suffix_attr`) or "Main".
-#   address_number_attr        A single house number, e.g. "3".
-#   address_number_low_attr    Low end of an address-number range preserved
-#   address_number_high_attr   in separate columns (e.g. road-centerline
-#                               segments); used when `address_number_attr` is
-#                               blank.
-#   prefix_directional_attr    e.g. "E".
-#   street_suffix_attr         e.g. "St". When set, `street_name_attr` is
-#                               treated as the bare name (no suffix).
-#   post_directional_attr      e.g. "N".
-#   secondary_address_attr     A combined secondary/unit address, e.g.
-#                               "Apt 1". Highest priority for the secondary
-#                               address; if set, the two parameters below are
-#                               ignored.
-#   secondary_abbreviation_attr    e.g. "Apt".
-#   secondary_number_low_attr      Low/high end of a secondary-unit number
-#   secondary_number_high_attr     range preserved in separate columns; used
-#                                   when `secondary_address_attr` is blank.
-#   output_attr_prefix          Optional prefix applied to every attribute
+#                             | "2729 VT Route 114 S" | "137 E Main St"  | "H 5 Stonehedge Dr"
+#   --------------------------|------------------------|------------------|--------------------
+#   FullAddress               | "2729 VT Route 114 S,  | "137 E Main St,  | "H 5 Stonehedge Dr,
+#                             |  Norton, VT 05907"     |  Hyde Park, VT   |  South Burlington,
+#                             |                        |  05655"          |  VT 05403"
+#   PrimaryAddress            | "2729 VT route 114 S"  | "137 E Main St"  | "H 5 Stonehedge Drive"
+#
+#   If FullAddress/PrimaryAddress aren't available in full, the address is
+#   built from these individual fields instead:
+#
+#   PrimaryName               | "VT Route 114 S"       | "E Main St"      | "Stonehedge Drive"
+#   AddressNumber             | "2729"                 | "137"            | "5"
+#   AddressNumber_LowRange    | (alternative to AddressNumber, when only a
+#   AddressNumber_HighRange   |  low/high range is available, e.g. a road-
+#                             |  centerline segment)
+#   AddressNumber_Prefix      | ""                     | ""               | "H"
+#   AddressNumber_Suffix      | ""                     | ""               | ""
+#   Street_PreDirectional     | ""                     | "E"              | ""
+#   Street_PostDirectional    | "S"                    | ""               | ""
+#   Street_PostType           | ""                     | "St"             | "Drive"
+#
+# `PrimaryName`, if supplied, is always parsed the same way a combined
+# string would be -- picking up its own prefix directional, route phrase,
+# road type, and suffix directional -- so it can hold either just the bare
+# name (e.g. "Stonehedge Drive") or the whole remainder (e.g. "E Main St").
+# Whenever `Street_PreDirectional` / `Street_PostDirectional` /
+# `Street_PostType` are also explicitly supplied, they take precedence over
+# whatever was auto-detected from `PrimaryName`, so partially redundant data
+# (as in the second example above, where "E Main St" and "St" are both
+# given) is handled the same as fully split data. All three examples above
+# standardize to:
+#   "2729 VT ROUTE 114 S", "137 EAST MAIN STREET", "H5 STONEHEDGE DRIVE"
+#
+# The secondary/unit address roles follow the same combined-vs-split pattern:
+#
+#   AddressSecondaryAddress        A combined secondary/unit address, e.g.
+#                                   "Apt 1". Highest priority for the
+#                                   secondary address; if set, the two
+#                                   parameters below are ignored.
+#   AddressSecondaryAbbreviation   e.g. "Apt".
+#   AddressSecondaryNumber_LowRange     Low/high end of a secondary-unit
+#   AddressSecondaryNumber_HighRange    number range preserved in separate
+#                                       columns; used when
+#                                       `AddressSecondaryAddress` is blank.
+#
+#   OutputAttributePrefix      Optional prefix applied to every attribute
 #                               this transformer writes back (e.g. "MAIL_"),
 #                               useful if the same transformer runs more than
 #                               once in one workspace against different
@@ -583,107 +632,115 @@ def _process_bare_street_name(text: str) -> tuple[Optional[str], Optional[str]]:
 # This module only standardizes address *numbers* and *street names* -- it
 # never inspects or cleans city, state, or zip/zip+4 values, beyond
 # recognizing and discarding a trailing city/state/zip tail on
-# `full_address_attr` so it doesn't get mistaken for part of the street.
+# `FullAddress` so it doesn't get mistaken for part of the street. See the
+# README for a full worked example of all three sample features.
 
 def _build_secondary_from_parts(
-    secondary_address: str,
-    secondary_abbreviation: str,
-    secondary_number_low: str,
-    secondary_number_high: str,
+    address: str,
+    abbreviation: str,
+    number_low: str,
+    number_high: str,
 ) -> Optional[str]:
     """Build a standardized secondary/unit segment from whichever of a
     combined secondary-address string or a split abbreviation/number-range
     are available. Returns None if none of them are populated."""
-    if secondary_address:
-        _, secondary = extract_secondary_unit(clean_whitespace(secondary_address.upper().replace(".", "")))
+    if address:
+        _, secondary = extract_secondary_unit(clean_whitespace(address.upper().replace(".", "")))
         return secondary
 
-    if secondary_abbreviation or secondary_number_low or secondary_number_high:
-        keyword = SECONDARY_UNIT_MAP.get(secondary_abbreviation.strip().upper(), "UNIT")
-        value = combine_number_range(secondary_number_low, secondary_number_high)
+    if abbreviation or number_low or number_high:
+        keyword = SECONDARY_UNIT_MAP.get(abbreviation.strip().upper(), "UNIT")
+        value = combine_number_range(number_low, number_high)
         return f"{keyword} {value}".strip() if value else keyword
 
     return None
 
 
 def _build_primary_from_parts(
+    primary_name: str,
     address_number: str,
     address_number_low: str,
     address_number_high: str,
-    prefix_directional: str,
-    street_name: str,
-    street_suffix: str,
-    post_directional: str,
+    address_number_prefix: str,
+    address_number_suffix: str,
+    street_pre_directional: str,
+    street_post_directional: str,
+    street_post_type: str,
 ) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Build the five primary-address segments from whichever granular
-    fields are available. Returns
+    fields are available. `PrimaryName`, if given, is always parsed the same
+    way a combined string would be -- picking up its own prefix directional,
+    route phrase, road type, and suffix directional -- so it can hold either
+    just the bare name (e.g. "Stonehedge Drive" when `Street_PostType` is
+    also given) or the whole remainder (e.g. "E Main St"). Whenever
+    `street_pre_directional` / `street_post_directional` / `street_post_type`
+    are explicitly supplied, they take precedence over whatever was
+    auto-detected from `PrimaryName`, so partially redundant data is handled
+    the same as fully split data. Returns
     (address_number, prefix_directional, street_name, road_type,
     suffix_directional); any that have no corresponding input are None."""
-    number = normalize_address_number_token(address_number) if address_number else combine_number_range(
+    base_number = normalize_address_number_token(address_number) if address_number else combine_number_range(
         address_number_low, address_number_high
     )
-    prefix_dir = normalize_prefix_directional(prefix_directional)
+    number = _merge_address_number_parts(address_number_prefix, base_number, address_number_suffix)
 
-    auto_suffix_dir = None
-    if street_suffix:
-        # Suffix supplied separately: the name field is just the bare name.
-        road_type = normalize_road_type(street_suffix)
-        name, auto_suffix_dir = _process_bare_street_name(street_name)
-    elif street_name:
-        # No separate suffix: the name field may itself carry a trailing
-        # road type and/or directional (e.g. "Main St" or "Main St N").
-        name, road_type, auto_suffix_dir = parse_street_remainder(street_name)
-    else:
-        name, road_type = None, None
+    auto_prefix_dir, name, auto_road_type, auto_suffix_dir = None, None, None, None
+    if primary_name:
+        auto_prefix_dir, name, auto_road_type, auto_suffix_dir = parse_primary_remainder(primary_name)
 
-    suffix_dir = normalize_suffix_directional(post_directional) or auto_suffix_dir
+    prefix_dir = normalize_prefix_directional(street_pre_directional) or auto_prefix_dir
+    road_type = normalize_road_type(street_post_type) or auto_road_type
+    suffix_dir = normalize_suffix_directional(street_post_directional) or auto_suffix_dir
     return number, prefix_dir, name, road_type, suffix_dir
 
 
 def standardize_feature_attributes(
     attributes: Dict[str, Any],
-    full_address_attr: str = "",
-    primary_address_attr: str = "",
-    street_name_attr: str = "",
-    address_number_attr: str = "",
-    address_number_low_attr: str = "",
-    address_number_high_attr: str = "",
-    prefix_directional_attr: str = "",
-    street_suffix_attr: str = "",
-    post_directional_attr: str = "",
-    secondary_address_attr: str = "",
-    secondary_abbreviation_attr: str = "",
-    secondary_number_low_attr: str = "",
-    secondary_number_high_attr: str = "",
-    output_attr_prefix: str = "",
+    FullAddress: str = "",
+    PrimaryAddress: str = "",
+    PrimaryName: str = "",
+    AddressNumber: str = "",
+    AddressNumber_LowRange: str = "",
+    AddressNumber_HighRange: str = "",
+    AddressNumber_Prefix: str = "",
+    AddressNumber_Suffix: str = "",
+    Street_PreDirectional: str = "",
+    Street_PostDirectional: str = "",
+    Street_PostType: str = "",
+    AddressSecondaryAddress: str = "",
+    AddressSecondaryAbbreviation: str = "",
+    AddressSecondaryNumber_LowRange: str = "",
+    AddressSecondaryNumber_HighRange: str = "",
+    OutputAttributePrefix: str = "",
 ) -> Dict[str, Any]:
     """Build the standardized-address output attributes for one feature from
     whichever address-role attributes are configured (see the module-level
-    comment above for what each parameter means). Every parameter is
-    optional and independent -- there is no required combination, and a
-    feature with none of them configured simply yields an empty result.
+    comment above for what each parameter means and the README for a full
+    worked example). Every parameter is optional and independent -- there is
+    no required combination, and a feature with none of them configured
+    simply yields an empty result.
 
     `attributes` is a plain dict of the feature's existing attribute values.
-    Each `..._attr` parameter names one of those existing attributes; pass
-    "" for whichever role doesn't apply to this feature type.
+    Each parameter names one of those existing attributes; pass "" for
+    whichever role doesn't apply to this feature type.
 
     Returns a flat dict -- `standardize_address()`'s two top-level keys plus
-    its `parsed_segments`, optionally prefixed with `output_attr_prefix` --
-    ready to be merged back onto the feature's attributes.
+    its `parsed_segments`, optionally prefixed with `OutputAttributePrefix`
+    -- ready to be merged back onto the feature's attributes.
     """
 
     def _get(attr_name: str) -> str:
         return (attributes.get(attr_name) or "") if attr_name.strip() else ""
 
     secondary_address = _build_secondary_from_parts(
-        _get(secondary_address_attr),
-        _get(secondary_abbreviation_attr),
-        _get(secondary_number_low_attr),
-        _get(secondary_number_high_attr),
+        _get(AddressSecondaryAddress),
+        _get(AddressSecondaryAbbreviation),
+        _get(AddressSecondaryNumber_LowRange),
+        _get(AddressSecondaryNumber_HighRange),
     )
 
-    if full_address_attr.strip() or primary_address_attr.strip():
-        combined = _get(full_address_attr) or _get(primary_address_attr)
+    if FullAddress.strip() or PrimaryAddress.strip():
+        combined = _get(FullAddress) or _get(PrimaryAddress)
         blended_text = strip_city_state_zip(clean_whitespace(combined.upper().replace(".", "")))
         blended = standardize_address(blended_text)
         segments = dict(blended["parsed_segments"])
@@ -692,9 +749,10 @@ def standardize_feature_attributes(
             secondary_address = segments["secondary_address_caps"]
     else:
         number, prefix_dir, name, road_type, suffix_dir = _build_primary_from_parts(
-            _get(address_number_attr), _get(address_number_low_attr), _get(address_number_high_attr),
-            _get(prefix_directional_attr), _get(street_name_attr), _get(street_suffix_attr),
-            _get(post_directional_attr),
+            _get(PrimaryName),
+            _get(AddressNumber), _get(AddressNumber_LowRange), _get(AddressNumber_HighRange),
+            _get(AddressNumber_Prefix), _get(AddressNumber_Suffix),
+            _get(Street_PreDirectional), _get(Street_PostDirectional), _get(Street_PostType),
         )
         primary_address_caps = " ".join(part for part in (number, prefix_dir, name, road_type, suffix_dir) if part)
         segments = {
@@ -717,8 +775,8 @@ def standardize_feature_attributes(
     flat = {"full_address_caps": full_address_caps or None, "full_address_title": title_case_address(full_address_caps) or None}
     flat.update(segments)
 
-    if output_attr_prefix:
-        flat = {f"{output_attr_prefix}{key}": value for key, value in flat.items()}
+    if OutputAttributePrefix:
+        flat = {f"{OutputAttributePrefix}{key}": value for key, value in flat.items()}
     return flat
 
 
@@ -731,54 +789,60 @@ class AddressCleaner:
 
     def __init__(
         self,
-        full_address_attr: str = "",
-        primary_address_attr: str = "",
-        street_name_attr: str = "",
-        address_number_attr: str = "",
-        address_number_low_attr: str = "",
-        address_number_high_attr: str = "",
-        prefix_directional_attr: str = "",
-        street_suffix_attr: str = "",
-        post_directional_attr: str = "",
-        secondary_address_attr: str = "",
-        secondary_abbreviation_attr: str = "",
-        secondary_number_low_attr: str = "",
-        secondary_number_high_attr: str = "",
-        output_attr_prefix: str = "",
+        FullAddress: str = "",
+        PrimaryAddress: str = "",
+        PrimaryName: str = "",
+        AddressNumber: str = "",
+        AddressNumber_LowRange: str = "",
+        AddressNumber_HighRange: str = "",
+        AddressNumber_Prefix: str = "",
+        AddressNumber_Suffix: str = "",
+        Street_PreDirectional: str = "",
+        Street_PostDirectional: str = "",
+        Street_PostType: str = "",
+        AddressSecondaryAddress: str = "",
+        AddressSecondaryAbbreviation: str = "",
+        AddressSecondaryNumber_LowRange: str = "",
+        AddressSecondaryNumber_HighRange: str = "",
+        OutputAttributePrefix: str = "",
     ) -> None:
-        self.full_address_attr = full_address_attr
-        self.primary_address_attr = primary_address_attr
-        self.street_name_attr = street_name_attr
-        self.address_number_attr = address_number_attr
-        self.address_number_low_attr = address_number_low_attr
-        self.address_number_high_attr = address_number_high_attr
-        self.prefix_directional_attr = prefix_directional_attr
-        self.street_suffix_attr = street_suffix_attr
-        self.post_directional_attr = post_directional_attr
-        self.secondary_address_attr = secondary_address_attr
-        self.secondary_abbreviation_attr = secondary_abbreviation_attr
-        self.secondary_number_low_attr = secondary_number_low_attr
-        self.secondary_number_high_attr = secondary_number_high_attr
-        self.output_attr_prefix = output_attr_prefix
+        self.FullAddress = FullAddress
+        self.PrimaryAddress = PrimaryAddress
+        self.PrimaryName = PrimaryName
+        self.AddressNumber = AddressNumber
+        self.AddressNumber_LowRange = AddressNumber_LowRange
+        self.AddressNumber_HighRange = AddressNumber_HighRange
+        self.AddressNumber_Prefix = AddressNumber_Prefix
+        self.AddressNumber_Suffix = AddressNumber_Suffix
+        self.Street_PreDirectional = Street_PreDirectional
+        self.Street_PostDirectional = Street_PostDirectional
+        self.Street_PostType = Street_PostType
+        self.AddressSecondaryAddress = AddressSecondaryAddress
+        self.AddressSecondaryAbbreviation = AddressSecondaryAbbreviation
+        self.AddressSecondaryNumber_LowRange = AddressSecondaryNumber_LowRange
+        self.AddressSecondaryNumber_HighRange = AddressSecondaryNumber_HighRange
+        self.OutputAttributePrefix = OutputAttributePrefix
 
     def input(self, feature: Any) -> None:
         attributes = {name: feature.getAttribute(name) for name in feature.getAllAttributeNames()}
         output = standardize_feature_attributes(
             attributes,
-            self.full_address_attr,
-            self.primary_address_attr,
-            self.street_name_attr,
-            self.address_number_attr,
-            self.address_number_low_attr,
-            self.address_number_high_attr,
-            self.prefix_directional_attr,
-            self.street_suffix_attr,
-            self.post_directional_attr,
-            self.secondary_address_attr,
-            self.secondary_abbreviation_attr,
-            self.secondary_number_low_attr,
-            self.secondary_number_high_attr,
-            self.output_attr_prefix,
+            self.FullAddress,
+            self.PrimaryAddress,
+            self.PrimaryName,
+            self.AddressNumber,
+            self.AddressNumber_LowRange,
+            self.AddressNumber_HighRange,
+            self.AddressNumber_Prefix,
+            self.AddressNumber_Suffix,
+            self.Street_PreDirectional,
+            self.Street_PostDirectional,
+            self.Street_PostType,
+            self.AddressSecondaryAddress,
+            self.AddressSecondaryAbbreviation,
+            self.AddressSecondaryNumber_LowRange,
+            self.AddressSecondaryNumber_HighRange,
+            self.OutputAttributePrefix,
         )
         for key, value in output.items():
             feature.setAttribute(key, value)
@@ -845,11 +909,90 @@ if __name__ == "__main__":
     assert result["full_address_caps"] == "3 EAST MAIN STREET N"
 
     # --- FME attribute-mapping wrapper ---------------------------------
+    # Three worked examples (see the README): a rural VT Route address, an
+    # in-town address, and a camp-lot address with a number prefix. Each is
+    # exercised through all three levels of field availability.
+    worked_examples = [
+        {
+            "FullAddress": "2729 VT Route 114 S, Norton, VT 05907",
+            "PrimaryAddress": "2729 VT route 114 S",
+            "PrimaryName": "VT Route 114 S",
+            "AddressNumber": "2729",
+            "AddressNumber_Prefix": "",
+            "AddressNumber_Suffix": "",
+            "Street_PreDirectional": "",
+            "Street_PostDirectional": "South",
+            "Street_PostType": "",
+            "expected": "2729 VT ROUTE 114 S",
+        },
+        {
+            "FullAddress": "137 E Main St, Hyde Park, VT 05655",
+            "PrimaryAddress": "137 E Main St",
+            "PrimaryName": "E Main St",
+            "AddressNumber": "137",
+            "AddressNumber_Prefix": "",
+            "AddressNumber_Suffix": "",
+            "Street_PreDirectional": "E",
+            "Street_PostDirectional": "",
+            "Street_PostType": "St",
+            "expected": "137 EAST MAIN STREET",
+        },
+        {
+            "FullAddress": "H 5 Stonehedge Dr, South Burlington, VT 05403",
+            "PrimaryAddress": "H 5 Stonehedge Drive",
+            "PrimaryName": "Stonehedge Drive",
+            "AddressNumber": "5",
+            "AddressNumber_Prefix": "H",
+            "AddressNumber_Suffix": "",
+            "Street_PreDirectional": "",
+            "Street_PostDirectional": "",
+            "Street_PostType": "Drive",
+            "expected": "H5 STONEHEDGE DRIVE",
+        },
+    ]
 
-    # Full combined column, with a city/state/zip tail to strip.
+    for ex in worked_examples:
+        # Tier 1: FullAddress (city/state/zip tail dropped automatically).
+        out = standardize_feature_attributes({"F": ex["FullAddress"]}, FullAddress="F")
+        assert out["full_address_caps"] == ex["expected"], (
+            f"FullAddress FAILED for {ex['FullAddress']!r}: got {out['full_address_caps']!r}"
+        )
+
+        # Tier 2: PrimaryAddress (no city/state/zip to begin with).
+        out = standardize_feature_attributes({"P": ex["PrimaryAddress"]}, PrimaryAddress="P")
+        assert out["full_address_caps"] == ex["expected"], (
+            f"PrimaryAddress FAILED for {ex['PrimaryAddress']!r}: got {out['full_address_caps']!r}"
+        )
+
+        # Tier 3: individual building-block fields.
+        out = standardize_feature_attributes(
+            {
+                "N": ex["PrimaryName"],
+                "NUM": ex["AddressNumber"],
+                "NUMPRE": ex["AddressNumber_Prefix"],
+                "NUMSUF": ex["AddressNumber_Suffix"],
+                "PRE": ex["Street_PreDirectional"],
+                "POST": ex["Street_PostDirectional"],
+                "TYPE": ex["Street_PostType"],
+            },
+            PrimaryName="N",
+            AddressNumber="NUM",
+            AddressNumber_Prefix="NUMPRE",
+            AddressNumber_Suffix="NUMSUF",
+            Street_PreDirectional="PRE",
+            Street_PostDirectional="POST",
+            Street_PostType="TYPE",
+        )
+        assert out["full_address_caps"] == ex["expected"], (
+            f"Building blocks FAILED for {ex}: got {out['full_address_caps']!r}"
+        )
+        print(f"OK: {ex['expected']!r:30} <- FullAddress / PrimaryAddress / building blocks")
+
+    # Full combined column, with a city/state/zip tail to strip and a
+    # secondary unit embedded within it.
     out = standardize_feature_attributes(
         {"SITE_ADDRESS": "133 S Burlington St, Apt 4, South Burlington, VT 05403"},
-        full_address_attr="SITE_ADDRESS",
+        FullAddress="SITE_ADDRESS",
     )
     assert out["full_address_caps"] == "133 SOUTH BURLINGTON STREET, UNIT 4"
     assert out["secondary_address_caps"] == "UNIT 4"
@@ -857,60 +1000,38 @@ if __name__ == "__main__":
     # Primary/secondary already split across two combined columns.
     out = standardize_feature_attributes(
         {"MAIL_PRIMARY": "88 South Hill Rd", "MAIL_UNIT": "Ste 2"},
-        primary_address_attr="MAIL_PRIMARY",
-        secondary_address_attr="MAIL_UNIT",
-        output_attr_prefix="MAIL_STD_",
+        PrimaryAddress="MAIL_PRIMARY",
+        AddressSecondaryAddress="MAIL_UNIT",
+        OutputAttributePrefix="MAIL_STD_",
     )
     assert out["MAIL_STD_full_address_caps"] == "88 SOUTH HILL ROAD, UNIT 2"
     assert out["MAIL_STD_road_type_caps"] == "ROAD"
 
-    # Fully split NENA/USPS-style fields: bare street name + separate
-    # suffix + separate pre/post directionals + a single house number.
-    out = standardize_feature_attributes(
-        {
-            "ADDNUM": "3",
-            "PREDIR": "E",
-            "STREETNAME": "Main",
-            "SUFFIX": "St",
-            "POSTDIR": "N",
-        },
-        address_number_attr="ADDNUM",
-        prefix_directional_attr="PREDIR",
-        street_name_attr="STREETNAME",
-        street_suffix_attr="SUFFIX",
-        post_directional_attr="POSTDIR",
-    )
-    assert out["full_address_caps"] == "3 EAST MAIN STREET N"
-    assert out["road_type_caps"] == "STREET"
-    assert out["suffix_directional_caps"] == "N"
-
-    # Street name field that still carries its own suffix (no separate
-    # suffix column) is auto-split the same way a blended string would be.
-    out = standardize_feature_attributes(
-        {"NAME": "Main St"}, street_name_attr="NAME",
-    )
-    assert out["street_name_caps"] == "MAIN"
-    assert out["road_type_caps"] == "STREET"
-
     # Address number preserved as a low/high range across two columns
     # (e.g. a road-centerline segment), with no single AddressNumber.
     out = standardize_feature_attributes(
-        {"LOW": "1", "HIGH": "5", "NAME": "Main", "SUFFIX": "St"},
-        address_number_low_attr="LOW",
-        address_number_high_attr="HIGH",
-        street_name_attr="NAME",
-        street_suffix_attr="SUFFIX",
+        {"LOW": "1", "HIGH": "5", "NAME": "Main St"},
+        AddressNumber_LowRange="LOW",
+        AddressNumber_HighRange="HIGH",
+        PrimaryName="NAME",
     )
     assert out["address_number_caps"] == "1-5"
     assert out["full_address_caps"] == "1-5 MAIN STREET"
+
+    # Half-value number built from a split AddressNumber + AddressNumber_Suffix.
+    out = standardize_feature_attributes(
+        {"NUM": "33", "SUF": "1/2", "NAME": "Main St"},
+        AddressNumber="NUM", AddressNumber_Suffix="SUF", PrimaryName="NAME",
+    )
+    assert out["full_address_caps"] == "33 1/2 MAIN STREET"
 
     # Secondary unit built from a split abbreviation + number range instead
     # of one combined secondary-address column.
     out = standardize_feature_attributes(
         {"UNIT_TYPE": "Apt", "UNIT_LOW": "1", "UNIT_HIGH": "5"},
-        secondary_abbreviation_attr="UNIT_TYPE",
-        secondary_number_low_attr="UNIT_LOW",
-        secondary_number_high_attr="UNIT_HIGH",
+        AddressSecondaryAbbreviation="UNIT_TYPE",
+        AddressSecondaryNumber_LowRange="UNIT_LOW",
+        AddressSecondaryNumber_HighRange="UNIT_HIGH",
     )
     assert out["secondary_address_caps"] == "UNIT 1-5"
 
