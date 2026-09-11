@@ -264,6 +264,22 @@ otherwise it's assumed to be part of the name and kept:
 | `Lake Morey` | `Rd` | `street_name` = `LAKE MOREY`, `road_type` = `ROAD` |
 | `E Main St` | `St` | `street_name` = `MAIN`, `road_type` = `STREET` (redundant `St` dropped) |
 
+**A directional word at the end of `PrimaryName` isn't always a suffix
+directional either.** The same logic applies to words like "North",
+"South", "East", and "West": they're often part of the actual street name
+(e.g. "Old West", "Avenue South") rather than a directional marker. A
+trailing single-letter abbreviation (`N`/`S`/`E`/`W`) is always unambiguous
+and still gets stripped; a trailing spelled-out *word* is only stripped as
+a redundant, droppable suffix directional if it actually matches
+`Street_PostDirectional` -- otherwise it's assumed to be part of the name
+and kept:
+
+| `PrimaryName` | `Street_PostDirectional` | Result |
+| --- | --- | --- |
+| `Old West` | *(none)* | `street_name` = `OLD WEST`, `suffix_directional` = `None` |
+| `Main St S` | *(none)* | `street_name` = `MAIN`, `suffix_directional` = `S` (unambiguous abbreviation) |
+| `Main St South` | `South` | `street_name` = `MAIN`, `suffix_directional` = `S` (redundant `South` dropped) |
+
 **Secondary/unit address, independent of the above.** Follows the same
 combined-vs-split pattern; none of the three worked examples has a
 secondary unit, so see the "Other examples" table below instead.

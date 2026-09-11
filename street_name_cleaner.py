@@ -298,14 +298,36 @@ def parse_prefix_directional(remainder: str) -> tuple[Optional[str], str]:
     return None, remainder
 
 
-def parse_suffix_directional(tokens: List[str]) -> tuple[Optional[str], List[str]]:
+def parse_suffix_directional(
+    tokens: List[str],
+    known_suffix_directional: Optional[str] = None,
+    only_abbreviated: bool = False,
+) -> tuple[Optional[str], List[str]]:
     """Extract a trailing cardinal suffix directional from a street-name
     token list. Requires at least one other token so a lone street name that
     happens to equal a directional word (unusual, but possible) isn't
-    stripped down to nothing."""
-    if tokens and tokens[-1] in SUFFIX_DIRECTIONAL_ABBR and len(tokens) > 1:
-        return SUFFIX_DIRECTIONAL_ABBR[tokens[-1]], tokens[:-1]
-    return None, tokens
+    stripped down to nothing.
+
+    Some spelled-out directional words (e.g. "West", "South") are just as
+    commonly the last word of the street's actual name (e.g. "Old West")
+    as they are a genuine suffix directional. When `only_abbreviated` is
+    True, a trailing *word* is only stripped out if it matches
+    `known_suffix_directional` (i.e. a caller already has the true suffix
+    directional from its own separate field, so this is confirmed
+    redundant); a trailing single-letter *abbreviation* (N/S/E/W) is always
+    treated as unambiguous and stripped regardless, matching how a prefix
+    directional is only ever recognized from its abbreviated form. When
+    `only_abbreviated` is False (the normal free-text case), any trailing
+    token found in `SUFFIX_DIRECTIONAL_ABBR` is stripped, as before."""
+    if not tokens or len(tokens) <= 1:
+        return None, tokens
+    last = tokens[-1]
+    candidate = SUFFIX_DIRECTIONAL_ABBR.get(last)
+    if not candidate:
+        return None, tokens
+    if only_abbreviated and last not in ("N", "S", "E", "W") and candidate != known_suffix_directional:
+        return None, tokens
+    return candidate, tokens[:-1]
 
 
 def extract_trailing_directional(remainder: str) -> Optional[str]:
@@ -316,7 +338,10 @@ def extract_trailing_directional(remainder: str) -> Optional[str]:
 
 
 def parse_street_remainder(
-    remainder: str, known_road_type: Optional[str] = None
+    remainder: str,
+    known_road_type: Optional[str] = None,
+    known_suffix_directional: Optional[str] = None,
+    only_abbreviated_suffix: bool = False,
 ) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """Parse whatever's left of a primary address after the address number
     and prefix directional (if any) have already been pulled off (or, when
@@ -334,12 +359,18 @@ def parse_street_remainder(
     `known_road_type`; otherwise it's assumed to be part of the name and
     left alone. When `known_road_type` is None (the normal free-text case,
     where there's nothing else to cross-check against), any trailing token
-    found in `ROAD_TYPE_MAP` is stripped, as before."""
+    found in `ROAD_TYPE_MAP` is stripped, as before.
+
+    `known_suffix_directional` and `only_abbreviated_suffix` are the same
+    idea applied to a trailing directional *word* (e.g. "West" in "Old
+    West") -- see `parse_suffix_directional()`."""
     remainder = clean_whitespace((remainder or "").upper().replace(".", ""))
     tokens = [t for t in remainder.split(" ") if t]
     tokens = [expand_ordinal_token(t) for t in tokens]
 
-    suffix_directional, tokens = parse_suffix_directional(tokens)
+    suffix_directional, tokens = parse_suffix_directional(
+        tokens, known_suffix_directional, only_abbreviated_suffix
+    )
 
     road_type = None
     if tokens:
@@ -535,7 +566,9 @@ def combine_number_range(low: str, high: str) -> Optional[str]:
 
 
 def parse_primary_remainder(
-    text: str, known_road_type: Optional[str] = None
+    text: str,
+    known_road_type: Optional[str] = None,
+    known_suffix_directional: Optional[str] = None,
 ) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Parse a blended `PrimaryName`-style string -- the part of a primary
     address that comes after the address number, which may itself still
@@ -544,8 +577,20 @@ def parse_primary_remainder(
     type / suffix directional. `known_road_type`, if given, is forwarded to
     `parse_street_remainder()` so an ambiguous trailing word (e.g. "Hill",
     "Lake") is only stripped out as a road type when it's redundant with
-    that known value, rather than assumed to be one on its own. Returns
-    (prefix_directional, street_name, road_type, suffix_directional)."""
+    that known value, rather than assumed to be one on its own.
+
+    Likewise, a trailing directional *word* (e.g. "West" in "Old West") is
+    only stripped out as a suffix directional when it matches
+    `known_suffix_directional` -- i.e. a caller already has the true suffix
+    directional from its own separate field, so this is confirmed redundant
+    -- otherwise it's assumed to be part of the name, same as any other
+    word. A trailing single-letter abbreviation (N/S/E/W) is still always
+    treated as unambiguous. This only applies to `PrimaryName`-style input
+    (a caller that has its own dedicated suffix-directional field to fall
+    back on); free-text parsing via `standardize_address()` has no such
+    field, so it keeps stripping any recognized trailing directional word.
+    Returns (prefix_directional, street_name, road_type, suffix_directional).
+    """
     text = clean_whitespace((text or "").upper().replace(".", ""))
     prefix_directional, remainder = parse_prefix_directional(text)
 
@@ -553,7 +598,9 @@ def parse_primary_remainder(
     if route_phrase:
         return prefix_directional, route_phrase, None, extract_trailing_directional(route_rest)
 
-    street_name, road_type, suffix_directional = parse_street_remainder(remainder, known_road_type)
+    street_name, road_type, suffix_directional = parse_street_remainder(
+        remainder, known_road_type, known_suffix_directional, only_abbreviated_suffix=True
+    )
     return prefix_directional, street_name, road_type, suffix_directional
 
 
@@ -685,16 +732,17 @@ def _build_primary_from_parts(
     number = _merge_address_number_parts(address_number_prefix, base_number, address_number_suffix)
 
     explicit_road_type = normalize_road_type(street_post_type)
+    explicit_suffix_dir = normalize_suffix_directional(street_post_directional)
 
     auto_prefix_dir, name, auto_road_type, auto_suffix_dir = None, None, None, None
     if primary_name:
         auto_prefix_dir, name, auto_road_type, auto_suffix_dir = parse_primary_remainder(
-            primary_name, known_road_type=explicit_road_type
+            primary_name, known_road_type=explicit_road_type, known_suffix_directional=explicit_suffix_dir
         )
 
     prefix_dir = normalize_prefix_directional(street_pre_directional) or auto_prefix_dir
     road_type = explicit_road_type or auto_road_type
-    suffix_dir = normalize_suffix_directional(street_post_directional) or auto_suffix_dir
+    suffix_dir = explicit_suffix_dir or auto_suffix_dir
     return number, prefix_dir, name, road_type, suffix_dir
 
 
@@ -898,6 +946,8 @@ if __name__ == "__main__":
          "2896 CANAAN HILL ROAD"),
         ("Route 2A",
          "VT ROUTE 2A"),
+        ("RTE 2",
+         "US ROUTE 2"),
         ("Route 7B",
          "VT ROUTE 7B"),
     ]
@@ -1089,6 +1139,37 @@ if __name__ == "__main__":
     )
     assert out["street_name"] == "MAIN"
     assert out["road_type"] == "STREET"
+
+    # The same ambiguity applies to a trailing directional *word* (e.g.
+    # "West" in "Old West") -- it must not be stripped out as a suffix
+    # directional just because PrimaryName's last token happens to be a
+    # directional word, when there's no Street_PostDirectional confirming
+    # it's actually one.
+    out = standardize_feature_attributes(
+        {"NAME": "Old West", "NUM": "123"},
+        PrimaryName="NAME", AddressNumber="NUM",
+    )
+    assert out["street_name"] == "OLD WEST"
+    assert out["suffix_directional"] is None
+
+    # A single-letter abbreviation is still unambiguous and gets stripped
+    # even with no Street_PostDirectional to confirm it.
+    out = standardize_feature_attributes(
+        {"NAME": "Main St S", "NUM": "137"},
+        PrimaryName="NAME", AddressNumber="NUM",
+    )
+    assert out["street_name"] == "MAIN"
+    assert out["suffix_directional"] == "S"
+
+    # ... and a trailing word that genuinely is a redundant duplicate of an
+    # explicitly-given Street_PostDirectional is still dropped, same as the
+    # analogous road-type case above.
+    out = standardize_feature_attributes(
+        {"NAME": "Main St South", "NUM": "137", "POST": "South"},
+        PrimaryName="NAME", AddressNumber="NUM", Street_PostDirectional="POST",
+    )
+    assert out["street_name"] == "MAIN"
+    assert out["suffix_directional"] == "S"
 
     # Secondary unit built from a split abbreviation + number range instead
     # of one combined secondary-address column.
