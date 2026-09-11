@@ -247,6 +247,21 @@ together with its own `Street_PreDirectional` of `"E"` and `Street_PostType`
 of `"St"` is handled exactly the same as if `PrimaryName` had just been the
 bare word `"Main"`.
 
+**A word that's also a valid road type isn't always one.** Words like
+"Hill", "Lake", and "Mill" are legitimate road types on their own (e.g.
+"Blue Spruce Hill") but just as often are part of a street's actual name
+(e.g. "Canaan Hill Rd", where "Hill" belongs to the name and "Rd" is the
+real road type). When `Street_PostType` is supplied, `PrimaryName`'s
+trailing word is only treated as a redundant, droppable road type if it
+actually matches `Street_PostType` (as with `"St"`/`"St"` above);
+otherwise it's assumed to be part of the name and kept:
+
+| `PrimaryName` | `Street_PostType` | Result |
+| --- | --- | --- |
+| `Canaan Hill` | `Rd` | `street_name_caps` = `CANAAN HILL`, `road_type_caps` = `ROAD` |
+| `Lake Morey` | `Rd` | `street_name_caps` = `LAKE MOREY`, `road_type_caps` = `ROAD` |
+| `E Main St` | `St` | `street_name_caps` = `MAIN`, `road_type_caps` = `STREET` (redundant `St` dropped) |
+
 **Secondary/unit address, independent of the above.** Follows the same
 combined-vs-split pattern; none of the three worked examples has a
 secondary unit, so see the "Other examples" table below instead.

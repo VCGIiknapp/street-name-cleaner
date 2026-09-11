@@ -308,13 +308,26 @@ def extract_trailing_directional(remainder: str) -> Optional[str]:
     return SUFFIX_DIRECTIONAL_ABBR.get(remainder)
 
 
-def parse_street_remainder(remainder: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
+def parse_street_remainder(
+    remainder: str, known_road_type: Optional[str] = None
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """Parse whatever's left of a primary address after the address number
     and prefix directional (if any) have already been pulled off (or, when
     called directly on a bare street-name string that may still carry its
     own suffix/directional, the whole thing): extracts a trailing road type
     and/or suffix directional, expands ordinals, and disambiguates a leading
-    "ST" as "SAINT". Returns (street_name, road_type, suffix_directional)."""
+    "ST" as "SAINT". Returns (street_name, road_type, suffix_directional).
+
+    Some words that are valid road types (e.g. "Hill", "Lake", "Mill") are
+    just as commonly part of a street's actual name (e.g. "Canaan Hill Rd",
+    where the real road type is "Rd" and "Hill" belongs in the name). When
+    `known_road_type` is given -- i.e. a caller already has the true road
+    type from its own separate field -- a trailing token is only stripped
+    out as a (redundant, duplicate) road type if it actually matches
+    `known_road_type`; otherwise it's assumed to be part of the name and
+    left alone. When `known_road_type` is None (the normal free-text case,
+    where there's nothing else to cross-check against), any trailing token
+    found in `ROAD_TYPE_MAP` is stripped, as before."""
     remainder = clean_whitespace((remainder or "").upper().replace(".", ""))
     tokens = [t for t in remainder.split(" ") if t]
     tokens = [expand_ordinal_token(t) for t in tokens]
@@ -322,9 +335,11 @@ def parse_street_remainder(remainder: str) -> tuple[Optional[str], Optional[str]
     suffix_directional, tokens = parse_suffix_directional(tokens)
 
     road_type = None
-    if tokens and tokens[-1] in ROAD_TYPE_MAP:
-        road_type = ROAD_TYPE_MAP[tokens[-1]]
-        tokens = tokens[:-1]
+    if tokens:
+        candidate = ROAD_TYPE_MAP.get(tokens[-1])
+        if candidate and (known_road_type is None or candidate == known_road_type):
+            road_type = candidate
+            tokens = tokens[:-1]
 
     if tokens and tokens[0] == "ST":
         tokens[0] = "SAINT"
@@ -512,12 +527,17 @@ def combine_number_range(low: str, high: str) -> Optional[str]:
     return low_n or high_n
 
 
-def parse_primary_remainder(text: str) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+def parse_primary_remainder(
+    text: str, known_road_type: Optional[str] = None
+) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Parse a blended `PrimaryName`-style string -- the part of a primary
     address that comes after the address number, which may itself still
     carry a leading prefix directional (e.g. "E Main St") and/or a
     highway/route phrase, or an ordinary street name with a trailing road
-    type / suffix directional. Returns
+    type / suffix directional. `known_road_type`, if given, is forwarded to
+    `parse_street_remainder()` so an ambiguous trailing word (e.g. "Hill",
+    "Lake") is only stripped out as a road type when it's redundant with
+    that known value, rather than assumed to be one on its own. Returns
     (prefix_directional, street_name, road_type, suffix_directional)."""
     text = clean_whitespace((text or "").upper().replace(".", ""))
     prefix_directional, remainder = parse_prefix_directional(text)
@@ -526,7 +546,7 @@ def parse_primary_remainder(text: str) -> tuple[Optional[str], Optional[str], Op
     if route_phrase:
         return prefix_directional, route_phrase, None, extract_trailing_directional(route_rest)
 
-    street_name, road_type, suffix_directional = parse_street_remainder(remainder)
+    street_name, road_type, suffix_directional = parse_street_remainder(remainder, known_road_type)
     return prefix_directional, street_name, road_type, suffix_directional
 
 
@@ -657,12 +677,16 @@ def _build_primary_from_parts(
     )
     number = _merge_address_number_parts(address_number_prefix, base_number, address_number_suffix)
 
+    explicit_road_type = normalize_road_type(street_post_type)
+
     auto_prefix_dir, name, auto_road_type, auto_suffix_dir = None, None, None, None
     if primary_name:
-        auto_prefix_dir, name, auto_road_type, auto_suffix_dir = parse_primary_remainder(primary_name)
+        auto_prefix_dir, name, auto_road_type, auto_suffix_dir = parse_primary_remainder(
+            primary_name, known_road_type=explicit_road_type
+        )
 
     prefix_dir = normalize_prefix_directional(street_pre_directional) or auto_prefix_dir
-    road_type = normalize_road_type(street_post_type) or auto_road_type
+    road_type = explicit_road_type or auto_road_type
     suffix_dir = normalize_suffix_directional(street_post_directional) or auto_suffix_dir
     return number, prefix_dir, name, road_type, suffix_dir
 
@@ -863,6 +887,8 @@ if __name__ == "__main__":
          "123 MAIN STREET"),
         ("88 South Hill Rd   ",
          "88 SOUTH HILL ROAD"),
+        ("2896 Canaan Hill Rd",
+         "2896 CANAAN HILL ROAD"),
     ]
 
     for raw, expected_full_caps in cases:
@@ -1021,6 +1047,37 @@ if __name__ == "__main__":
     )
     assert "full_address_caps" not in out
     assert _join_primary_segments(out) == "33 1/2 MAIN STREET"
+
+    # A word that's also a valid road type (Hill, Lake, ...) but is really
+    # part of the street name must not be stripped out just because
+    # PrimaryName's last token happens to match ROAD_TYPE_MAP -- the
+    # explicitly-given Street_PostType is what's authoritative, and it
+    # doesn't match "Hill", so "Hill" stays part of the name.
+    out = standardize_feature_attributes(
+        {"NAME": "Canaan Hill", "NUM": "2896", "TYPE": "Rd"},
+        PrimaryName="NAME", AddressNumber="NUM", Street_PostType="TYPE",
+    )
+    assert out["street_name_caps"] == "CANAAN HILL"
+    assert out["road_type_caps"] == "ROAD"
+
+    out = standardize_feature_attributes(
+        {"NAME": "Lake Morey", "NUM": "10", "TYPE": "Rd"},
+        PrimaryName="NAME", AddressNumber="NUM", Street_PostType="TYPE",
+    )
+    assert out["street_name_caps"] == "LAKE MOREY"
+    assert out["road_type_caps"] == "ROAD"
+
+    # ... but when the trailing word genuinely is a redundant duplicate of
+    # the explicit road type (as opposed to coincidentally matching a
+    # different one), it's still correctly treated as redundant and
+    # dropped from the name, same as before this fix.
+    out = standardize_feature_attributes(
+        {"NAME": "E Main St", "NUM": "137", "PRE": "E", "TYPE": "St"},
+        PrimaryName="NAME", AddressNumber="NUM",
+        Street_PreDirectional="PRE", Street_PostType="TYPE",
+    )
+    assert out["street_name_caps"] == "MAIN"
+    assert out["road_type_caps"] == "STREET"
 
     # Secondary unit built from a split abbreviation + number range instead
     # of one combined secondary-address column.
