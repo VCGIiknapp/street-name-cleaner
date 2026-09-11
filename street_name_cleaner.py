@@ -111,11 +111,6 @@ SECONDARY_RE = re.compile(
 )
 BARE_HASH_RE = re.compile(r"#\s*([A-Z0-9\-]+)")
 
-# Words that should stay fully uppercase when producing a Title Case string
-# (initialisms), in addition to alphanumeric address/route numbers.
-KEEP_UPPER_WORDS = {"PO", "US", "VT"}
-ALPHANUMERIC_TOKEN_RE = re.compile(r"^\d+[A-Z]+$")
-
 
 # ---------------------------------------------------------------------------
 # Base formatting helpers
@@ -362,27 +357,6 @@ def parse_po_box(text: str) -> Optional[Dict[str, Optional[str]]]:
 
 
 # ---------------------------------------------------------------------------
-# Title casing
-# ---------------------------------------------------------------------------
-
-def title_case_address(text: Optional[str]) -> Optional[str]:
-    """Title-case a caps address string while preserving initialisms
-    (PO/US/VT) and alphanumeric numbers (e.g. "28A") exactly as-is."""
-    if not text:
-        return text
-    words = text.split(" ")
-    out = []
-    for word in words:
-        core = word.rstrip(",")
-        suffix = word[len(core):]
-        if ALPHANUMERIC_TOKEN_RE.match(core) or core.upper() in KEEP_UPPER_WORDS:
-            out.append(core + suffix)
-        else:
-            out.append(core.capitalize() + suffix)
-    return " ".join(out)
-
-
-# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -449,17 +423,14 @@ def standardize_address(raw_address: str) -> Dict[str, Any]:
 
     result = {
         "full_address_caps": full_address_caps or None,
-        "full_address_title": title_case_address(full_address_caps) or None,
         "parsed_segments": {
             "primary_address_caps": primary_address_caps or None,
-            "primary_address_title": title_case_address(primary_address_caps) or None,
             "address_number_caps": address_number,
             "prefix_directional_caps": prefix_directional,
             "street_name_caps": street_name,
             "road_type_caps": road_type,
             "suffix_directional_caps": suffix_directional,
             "secondary_address_caps": secondary_address,
-            "secondary_address_title": title_case_address(secondary_address),
         },
     }
     return result
@@ -726,9 +697,16 @@ def standardize_feature_attributes(
     Each parameter names one of those existing attributes; pass "" for
     whichever role doesn't apply to this feature type.
 
-    Returns a flat dict -- `standardize_address()`'s two top-level keys plus
-    its `parsed_segments`, optionally prefixed with `OutputAttributePrefix`
-    -- ready to be merged back onto the feature's attributes.
+    Outputs are a direct cleaning of whatever was actually supplied: the
+    combined `full_address_caps` / `primary_address_caps` keys are only
+    produced when `FullAddress` or `PrimaryAddress` was itself given (since
+    only then is a combined address actually being cleaned, rather than
+    invented from unrelated granular fields); otherwise the return value
+    holds only the cleaned building-block segments -- `secondary_address_caps`
+    is always included when any secondary-role field was supplied, whichever
+    tier is otherwise in use -- optionally prefixed with
+    `OutputAttributePrefix`, ready to be merged back onto the feature's
+    attributes.
     """
 
     def _get(attr_name: str) -> str:
@@ -741,12 +719,13 @@ def standardize_feature_attributes(
         _get(AddressSecondaryNumber_HighRange),
     )
 
-    if FullAddress.strip() or PrimaryAddress.strip():
+    combined_given = bool(FullAddress.strip() or PrimaryAddress.strip())
+    if combined_given:
         combined = _get(FullAddress) or _get(PrimaryAddress)
         blended_text = strip_city_state_zip(clean_whitespace(combined.upper().replace(".", "")))
         blended = standardize_address(blended_text)
         segments = dict(blended["parsed_segments"])
-        primary_address_caps = segments["primary_address_caps"] or ""
+        primary_address_caps = segments.pop("primary_address_caps") or ""
         if secondary_address is None:
             secondary_address = segments["secondary_address_caps"]
     else:
@@ -765,17 +744,15 @@ def standardize_feature_attributes(
             "suffix_directional_caps": suffix_dir,
         }
 
-    segments["primary_address_caps"] = primary_address_caps or None
-    segments["primary_address_title"] = title_case_address(primary_address_caps) or None
     segments["secondary_address_caps"] = secondary_address
-    segments["secondary_address_title"] = title_case_address(secondary_address)
 
-    full_address_caps = primary_address_caps
-    if secondary_address:
-        full_address_caps = f"{primary_address_caps}, {secondary_address}" if primary_address_caps else secondary_address
-
-    flat = {"full_address_caps": full_address_caps or None, "full_address_title": title_case_address(full_address_caps) or None}
-    flat.update(segments)
+    flat = dict(segments)
+    if combined_given:
+        full_address_caps = primary_address_caps
+        if secondary_address:
+            full_address_caps = f"{primary_address_caps}, {secondary_address}" if primary_address_caps else secondary_address
+        flat["primary_address_caps"] = primary_address_caps or None
+        flat["full_address_caps"] = full_address_caps or None
 
     if OutputAttributePrefix:
         flat = {f"{OutputAttributePrefix}{key}": value for key, value in flat.items()}
@@ -899,11 +876,6 @@ if __name__ == "__main__":
     # Graceful handling of a missing secondary unit.
     result = standardize_address("123 Main Street")
     assert result["parsed_segments"]["secondary_address_caps"] is None
-    assert result["parsed_segments"]["secondary_address_title"] is None
-
-    # Title Case output, incl. the "28A" alphanumeric-stays-capitalized rule.
-    assert standardize_address("88 South Hill Rd   ")["full_address_title"] == "88 South Hill Road"
-    assert standardize_address("28-A Main St")["parsed_segments"]["primary_address_title"] == "28A Main Street"
 
     # A true full mailing address carries a city/state/zip tail that this
     # module doesn't touch -- it should be recognized and dropped.
@@ -911,6 +883,21 @@ if __name__ == "__main__":
     assert result["full_address_caps"] == "3 EAST MAIN STREET N"
 
     # --- FME attribute-mapping wrapper ---------------------------------
+
+    def _join_primary_segments(out):
+        # Building-block-only input never produces full_address_caps /
+        # primary_address_caps (see standardize_feature_attributes's
+        # docstring), so tests on that path recombine the individual
+        # segments themselves to check the parsing was correct.
+        parts = (
+            out.get("address_number_caps"),
+            out.get("prefix_directional_caps"),
+            out.get("street_name_caps"),
+            out.get("road_type_caps"),
+            out.get("suffix_directional_caps"),
+        )
+        return " ".join(part for part in parts if part)
+
     # Three worked examples (see the README): a rural VT Route address, an
     # in-town address, and a camp-lot address with a number prefix. Each is
     # exercised through all three levels of field availability.
@@ -966,7 +953,9 @@ if __name__ == "__main__":
             f"PrimaryAddress FAILED for {ex['PrimaryAddress']!r}: got {out['full_address_caps']!r}"
         )
 
-        # Tier 3: individual building-block fields.
+        # Tier 3: individual building-block fields. No FullAddress/
+        # PrimaryAddress was given, so no combined key is produced --
+        # outputs are only a direct cleaning of the granular inputs.
         out = standardize_feature_attributes(
             {
                 "N": ex["PrimaryName"],
@@ -985,8 +974,11 @@ if __name__ == "__main__":
             Street_PostDirectional="POST",
             Street_PostType="TYPE",
         )
-        assert out["full_address_caps"] == ex["expected"], (
-            f"Building blocks FAILED for {ex}: got {out['full_address_caps']!r}"
+        assert "full_address_caps" not in out and "primary_address_caps" not in out, (
+            f"Building blocks FAILED for {ex}: unexpected combined key in {out}"
+        )
+        assert _join_primary_segments(out) == ex["expected"], (
+            f"Building blocks FAILED for {ex}: got {out}"
         )
         print(f"OK: {ex['expected']!r:30} <- FullAddress / PrimaryAddress / building blocks")
 
@@ -1010,22 +1002,25 @@ if __name__ == "__main__":
     assert out["MAIL_STD_road_type_caps"] == "ROAD"
 
     # Address number preserved as a low/high range across two columns
-    # (e.g. a road-centerline segment), with no single AddressNumber.
+    # (e.g. a road-centerline segment), with no single AddressNumber. No
+    # combined column was given, so no combined key is produced.
     out = standardize_feature_attributes(
         {"LOW": "1", "HIGH": "5", "NAME": "Main St"},
         AddressNumber_LowRange="LOW",
         AddressNumber_HighRange="HIGH",
         PrimaryName="NAME",
     )
+    assert "full_address_caps" not in out
     assert out["address_number_caps"] == "1-5"
-    assert out["full_address_caps"] == "1-5 MAIN STREET"
+    assert _join_primary_segments(out) == "1-5 MAIN STREET"
 
     # Half-value number built from a split AddressNumber + AddressNumber_Suffix.
     out = standardize_feature_attributes(
         {"NUM": "33", "SUF": "1/2", "NAME": "Main St"},
         AddressNumber="NUM", AddressNumber_Suffix="SUF", PrimaryName="NAME",
     )
-    assert out["full_address_caps"] == "33 1/2 MAIN STREET"
+    assert "full_address_caps" not in out
+    assert _join_primary_segments(out) == "33 1/2 MAIN STREET"
 
     # Secondary unit built from a split abbreviation + number range instead
     # of one combined secondary-address column.
@@ -1038,9 +1033,11 @@ if __name__ == "__main__":
     assert out["secondary_address_caps"] == "UNIT 1-5"
 
     # No address-role attributes configured at all -> graceful empty
-    # result, never an error (no combination is a strict requirement).
+    # result, never an error (no combination is a strict requirement), and
+    # no combined keys since nothing combined was ever supplied.
     out = standardize_feature_attributes({})
-    assert out["full_address_caps"] is None
+    assert "full_address_caps" not in out and "primary_address_caps" not in out
     assert out["address_number_caps"] is None
+    assert out["secondary_address_caps"] is None
 
     print("\nAll assertions passed.")
