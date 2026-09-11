@@ -31,22 +31,22 @@ dependencies.
 from street_name_cleaner import standardize_address
 
 result = standardize_address("123 N Main St")
-print(result["full_address_caps"])   # "123 NORTH MAIN STREET"
+print(result["full_address"])   # "123 NORTH MAIN STREET"
 ```
 
 `standardize_address()` returns:
 
 ```python
 {
-    "full_address_caps": "...",
+    "full_address": "...",
     "parsed_segments": {
-        "primary_address_caps": "...",
-        "address_number_caps": "...",
-        "prefix_directional_caps": "...",
-        "street_name_caps": "...",
-        "road_type_caps": "...",
-        "suffix_directional_caps": "...",
-        "secondary_address_caps": "...",
+        "primary_address": "...",
+        "address_number": "...",
+        "prefix_directional": "...",
+        "street_name": "...",
+        "road_type": "...",
+        "suffix_directional": "...",
+        "secondary_address": "...",
     },
 }
 ```
@@ -63,7 +63,7 @@ Every example below is taken directly from the module's self-test suite
 (`python street_name_cleaner.py`), so this table is guaranteed to stay in
 sync with what the code actually does.
 
-| Input | `full_address_caps` output | Demonstrates |
+| Input | `full_address` output | Demonstrates |
 | --- | --- | --- |
 | `123   N Main   St` | `123 NORTH MAIN STREET` | Collapsing extra internal whitespace; `N` as a prefix directional |
 | `33 1 / 2 St. Johnsbury Rd` | `33 1/2 SAINT JOHNSBURY ROAD` | Half-value spacing (`1 / 2` -> `1/2`); `St` as `SAINT` (a place name, not a road type) |
@@ -76,7 +76,7 @@ sync with what the code actually does.
 | `PO BOX 45, Ste # 2` | `PO BOX 45, UNIT 2` | PO Box combined with a secondary unit; `#` stripped |
 | `123 St Paul St` | `123 SAINT PAUL STREET` | `St` disambiguated two different ways in the same string: `SAINT` (place name) vs. `STREET` (road type) |
 | `44-A N. Main st E., apt# 3` | `44A NORTH MAIN STREET E, UNIT 3` | Stress test: alphanumeric number, prefix directional, road type, suffix directional, and secondary unit all together |
-| `123 Main Street` | `123 MAIN STREET` | Graceful handling when there's no secondary unit at all (`secondary_address_caps` is `None`) |
+| `123 Main Street` | `123 MAIN STREET` | Graceful handling when there's no secondary unit at all (`secondary_address` is `None`) |
 | `88 South Hill Rd` (with trailing spaces) | `88 SOUTH HILL ROAD` | Leading/trailing whitespace trimmed |
 | `3 E Main St N, South Burlington, VT 05403` | `3 EAST MAIN STREET N` | A true full mailing address: trailing city/state/zip recognized and dropped automatically |
 
@@ -163,7 +163,7 @@ class AddressCleaner(object):
             AddressSecondaryAbbreviation="",
             AddressSecondaryNumber_LowRange="",
             AddressSecondaryNumber_HighRange="",
-            OutputAttributePrefix="CLEAN_"       # (Optional) e.g., creates "CLEAN_full_address_caps"
+            OutputAttributePrefix="CLEAN_"       # (Optional) e.g., creates "CLEAN_full_address"
         )
 
     def input(self, feature):
@@ -203,13 +203,13 @@ All three clean to the same result: `2729 VT ROUTE 114 S`, `137 EAST MAIN
 STREET`, and `H5 STONEHEDGE DRIVE`, respectively. **How that result is
 returned depends on which tier of input was used:**
 
-| Example | Tier 1 (`FullAddress`/`PrimaryAddress`) `full_address_caps` | Tier 2 (building blocks) individual segments |
+| Example | Tier 1 (`FullAddress`/`PrimaryAddress`) `full_address` | Tier 2 (building blocks) individual segments |
 | --- | --- | --- |
-| 1 | `2729 VT ROUTE 114 S` | `address_number_caps`=`2729`, `street_name_caps`=`VT ROUTE 114`, `suffix_directional_caps`=`S` |
-| 2 | `137 EAST MAIN STREET` | `address_number_caps`=`137`, `prefix_directional_caps`=`EAST`, `street_name_caps`=`MAIN`, `road_type_caps`=`STREET` |
-| 3 | `H5 STONEHEDGE DRIVE` | `address_number_caps`=`H5`, `street_name_caps`=`STONEHEDGE`, `road_type_caps`=`DRIVE` |
+| 1 | `2729 VT ROUTE 114 S` | `address_number`=`2729`, `street_name`=`VT ROUTE 114`, `suffix_directional`=`S` |
+| 2 | `137 EAST MAIN STREET` | `address_number`=`137`, `prefix_directional`=`EAST`, `street_name`=`MAIN`, `road_type`=`STREET` |
+| 3 | `H5 STONEHEDGE DRIVE` | `address_number`=`H5`, `street_name`=`STONEHEDGE`, `road_type`=`DRIVE` |
 
-Tier 1 produces one combined `full_address_caps` (and `primary_address_caps`)
+Tier 1 produces one combined `full_address` (and `primary_address`)
 attribute because a combined address was actually given as input. Tier 2
 never fabricates those combined attributes -- see "Outputs are only a
 direct cleaning of whatever was actually supplied" below.
@@ -258,9 +258,9 @@ otherwise it's assumed to be part of the name and kept:
 
 | `PrimaryName` | `Street_PostType` | Result |
 | --- | --- | --- |
-| `Canaan Hill` | `Rd` | `street_name_caps` = `CANAAN HILL`, `road_type_caps` = `ROAD` |
-| `Lake Morey` | `Rd` | `street_name_caps` = `LAKE MOREY`, `road_type_caps` = `ROAD` |
-| `E Main St` | `St` | `street_name_caps` = `MAIN`, `road_type_caps` = `STREET` (redundant `St` dropped) |
+| `Canaan Hill` | `Rd` | `street_name` = `CANAAN HILL`, `road_type` = `ROAD` |
+| `Lake Morey` | `Rd` | `street_name` = `LAKE MOREY`, `road_type` = `ROAD` |
+| `E Main St` | `St` | `street_name` = `MAIN`, `road_type` = `STREET` (redundant `St` dropped) |
 
 **Secondary/unit address, independent of the above.** Follows the same
 combined-vs-split pattern; none of the three worked examples has a
@@ -283,15 +283,15 @@ A feature type with none of these configured simply yields an empty result
 -- never an error.
 
 **Outputs are only a direct cleaning of whatever was actually supplied.**
-The combined `full_address_caps` / `primary_address_caps` attributes are
+The combined `full_address` / `primary_address` attributes are
 only written back when `FullAddress` or `PrimaryAddress` was itself given --
 since only then is there an actual combined address being cleaned, rather
 than one invented out of unrelated individual fields. When only
 building-block fields (Tier 2) are supplied, the transformer writes back
 only the individual cleaned segments that correspond to what was given
-(`address_number_caps`, `prefix_directional_caps`, `street_name_caps`,
-`road_type_caps`, `suffix_directional_caps`, and/or `secondary_address_caps`)
--- it never fabricates a `full_address_caps` or `primary_address_caps` out
+(`address_number`, `prefix_directional`, `street_name`,
+`road_type`, `suffix_directional`, and/or `secondary_address`)
+-- it never fabricates a `full_address` or `primary_address` out
 of them. All output attribute names are optionally prefixed with
 `OutputAttributePrefix`.
 
@@ -301,11 +301,11 @@ A few more combinations, to show individual fields in isolation:
 
 | Scenario | Fields set | Result |
 | --- | --- | --- |
-| Full address with an embedded unit and a city/state/zip tail | `FullAddress="133 S Burlington St, Apt 4, South Burlington, VT 05403"` | `full_address_caps` = `133 SOUTH BURLINGTON STREET, UNIT 4` (Tier 1 -- combined keys are produced) |
-| Primary + secondary as two combined columns, with an output prefix | `PrimaryAddress="88 South Hill Rd"`, `AddressSecondaryAddress="Ste 2"`, `OutputAttributePrefix="MAIL_STD_"` | `MAIL_STD_full_address_caps` = `88 SOUTH HILL ROAD, UNIT 2` (every output attribute is prefixed with `MAIL_STD_`) |
-| Address-number range (road-centerline segment), building blocks only | `AddressNumber_LowRange="1"`, `AddressNumber_HighRange="5"`, `PrimaryName="Main St"` | `address_number_caps` = `1-5`, `street_name_caps` = `MAIN`, `road_type_caps` = `STREET` -- no `full_address_caps` or `primary_address_caps` key at all (Tier 2 -- no combined input was given) |
-| Half-value number from a split `AddressNumber` + `AddressNumber_Suffix` | `AddressNumber="33"`, `AddressNumber_Suffix="1/2"`, `PrimaryName="Main St"` | `address_number_caps` = `33 1/2` -- again, no combined key |
-| Secondary unit from a split abbreviation + range | `AddressSecondaryAbbreviation="Apt"`, `AddressSecondaryNumber_LowRange="1"`, `AddressSecondaryNumber_HighRange="5"` | `secondary_address_caps` = `UNIT 1-5` |
+| Full address with an embedded unit and a city/state/zip tail | `FullAddress="133 S Burlington St, Apt 4, South Burlington, VT 05403"` | `full_address` = `133 SOUTH BURLINGTON STREET, UNIT 4` (Tier 1 -- combined keys are produced) |
+| Primary + secondary as two combined columns, with an output prefix | `PrimaryAddress="88 South Hill Rd"`, `AddressSecondaryAddress="Ste 2"`, `OutputAttributePrefix="MAIL_STD_"` | `MAIL_STD_full_address` = `88 SOUTH HILL ROAD, UNIT 2` (every output attribute is prefixed with `MAIL_STD_`) |
+| Address-number range (road-centerline segment), building blocks only | `AddressNumber_LowRange="1"`, `AddressNumber_HighRange="5"`, `PrimaryName="Main St"` | `address_number` = `1-5`, `street_name` = `MAIN`, `road_type` = `STREET` -- no `full_address` or `primary_address` key at all (Tier 2 -- no combined input was given) |
+| Half-value number from a split `AddressNumber` + `AddressNumber_Suffix` | `AddressNumber="33"`, `AddressNumber_Suffix="1/2"`, `PrimaryName="Main St"` | `address_number` = `33 1/2` -- again, no combined key |
+| Secondary unit from a split abbreviation + range | `AddressSecondaryAbbreviation="Apt"`, `AddressSecondaryNumber_LowRange="1"`, `AddressSecondaryNumber_HighRange="5"` | `secondary_address` = `UNIT 1-5` |
 | No address-role parameters set at all | *(nothing)* | Every segment value is `None`, and no combined keys are present at all -- never an error |
 
 This module only standardizes address *numbers* and *street names*; it

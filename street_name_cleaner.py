@@ -155,7 +155,7 @@ def strip_city_state_zip(text: str) -> str:
 
 def extract_secondary_unit(text: str) -> tuple[str, Optional[str]]:
     """Split off a secondary/unit designation from the end of an address
-    string. Returns (remaining_primary_text, secondary_address_caps)."""
+    string. Returns (remaining_primary_text, secondary_address)."""
     match = None
     for candidate in SECONDARY_RE.finditer(text):
         match = candidate  # keep the last match (unit is expected at the end)
@@ -430,22 +430,22 @@ def standardize_address(raw_address: str) -> Dict[str, Any]:
             for part in [address_number, prefix_directional, street_name, road_type, suffix_directional]
             if part
         ]
-    primary_address_caps = " ".join(primary_parts) if primary_parts else ""
+    primary_address = " ".join(primary_parts) if primary_parts else ""
 
-    full_address_caps = primary_address_caps
+    full_address = primary_address
     if secondary_address:
-        full_address_caps = f"{primary_address_caps}, {secondary_address}" if primary_address_caps else secondary_address
+        full_address = f"{primary_address}, {secondary_address}" if primary_address else secondary_address
 
     result = {
-        "full_address_caps": full_address_caps or None,
+        "full_address": full_address or None,
         "parsed_segments": {
-            "primary_address_caps": primary_address_caps or None,
-            "address_number_caps": address_number,
-            "prefix_directional_caps": prefix_directional,
-            "street_name_caps": street_name,
-            "road_type_caps": road_type,
-            "suffix_directional_caps": suffix_directional,
-            "secondary_address_caps": secondary_address,
+            "primary_address": primary_address or None,
+            "address_number": address_number,
+            "prefix_directional": prefix_directional,
+            "street_name": street_name,
+            "road_type": road_type,
+            "suffix_directional": suffix_directional,
+            "secondary_address": secondary_address,
         },
     }
     return result
@@ -722,11 +722,11 @@ def standardize_feature_attributes(
     whichever role doesn't apply to this feature type.
 
     Outputs are a direct cleaning of whatever was actually supplied: the
-    combined `full_address_caps` / `primary_address_caps` keys are only
+    combined `full_address` / `primary_address` keys are only
     produced when `FullAddress` or `PrimaryAddress` was itself given (since
     only then is a combined address actually being cleaned, rather than
     invented from unrelated granular fields); otherwise the return value
-    holds only the cleaned building-block segments -- `secondary_address_caps`
+    holds only the cleaned building-block segments -- `secondary_address`
     is always included when any secondary-role field was supplied, whichever
     tier is otherwise in use -- optionally prefixed with
     `OutputAttributePrefix`, ready to be merged back onto the feature's
@@ -749,9 +749,9 @@ def standardize_feature_attributes(
         blended_text = strip_city_state_zip(clean_whitespace(combined.upper().replace(".", "")))
         blended = standardize_address(blended_text)
         segments = dict(blended["parsed_segments"])
-        primary_address_caps = segments.pop("primary_address_caps") or ""
+        primary_address = segments.pop("primary_address") or ""
         if secondary_address is None:
-            secondary_address = segments["secondary_address_caps"]
+            secondary_address = segments["secondary_address"]
     else:
         number, prefix_dir, name, road_type, suffix_dir = _build_primary_from_parts(
             _get(PrimaryName),
@@ -759,24 +759,24 @@ def standardize_feature_attributes(
             _get(AddressNumber_Prefix), _get(AddressNumber_Suffix),
             _get(Street_PreDirectional), _get(Street_PostDirectional), _get(Street_PostType),
         )
-        primary_address_caps = " ".join(part for part in (number, prefix_dir, name, road_type, suffix_dir) if part)
+        primary_address = " ".join(part for part in (number, prefix_dir, name, road_type, suffix_dir) if part)
         segments = {
-            "address_number_caps": number,
-            "prefix_directional_caps": prefix_dir,
-            "street_name_caps": name,
-            "road_type_caps": road_type,
-            "suffix_directional_caps": suffix_dir,
+            "address_number": number,
+            "prefix_directional": prefix_dir,
+            "street_name": name,
+            "road_type": road_type,
+            "suffix_directional": suffix_dir,
         }
 
-    segments["secondary_address_caps"] = secondary_address
+    segments["secondary_address"] = secondary_address
 
     flat = dict(segments)
     if combined_given:
-        full_address_caps = primary_address_caps
+        full_address = primary_address
         if secondary_address:
-            full_address_caps = f"{primary_address_caps}, {secondary_address}" if primary_address_caps else secondary_address
-        flat["primary_address_caps"] = primary_address_caps or None
-        flat["full_address_caps"] = full_address_caps or None
+            full_address = f"{primary_address}, {secondary_address}" if primary_address else secondary_address
+        flat["primary_address"] = primary_address or None
+        flat["full_address"] = full_address or None
 
     if OutputAttributePrefix:
         flat = {f"{OutputAttributePrefix}{key}": value for key, value in flat.items()}
@@ -891,36 +891,36 @@ if __name__ == "__main__":
          "2896 CANAAN HILL ROAD"),
     ]
 
-    for raw, expected_full_caps in cases:
+    for raw, expected_full in cases:
         result = standardize_address(raw)
-        actual = result["full_address_caps"]
-        assert actual == expected_full_caps, (
-            f"FAILED for {raw!r}: expected {expected_full_caps!r}, got {actual!r}\n{result}"
+        actual = result["full_address"]
+        assert actual == expected_full, (
+            f"FAILED for {raw!r}: expected {expected_full!r}, got {actual!r}\n{result}"
         )
         print(f"OK: {raw!r:45} -> {actual!r}")
 
     # Graceful handling of a missing secondary unit.
     result = standardize_address("123 Main Street")
-    assert result["parsed_segments"]["secondary_address_caps"] is None
+    assert result["parsed_segments"]["secondary_address"] is None
 
     # A true full mailing address carries a city/state/zip tail that this
     # module doesn't touch -- it should be recognized and dropped.
     result = standardize_address("3 E Main St N, South Burlington, VT 05403")
-    assert result["full_address_caps"] == "3 EAST MAIN STREET N"
+    assert result["full_address"] == "3 EAST MAIN STREET N"
 
     # --- FME attribute-mapping wrapper ---------------------------------
 
     def _join_primary_segments(out):
-        # Building-block-only input never produces full_address_caps /
-        # primary_address_caps (see standardize_feature_attributes's
+        # Building-block-only input never produces full_address /
+        # primary_address (see standardize_feature_attributes's
         # docstring), so tests on that path recombine the individual
         # segments themselves to check the parsing was correct.
         parts = (
-            out.get("address_number_caps"),
-            out.get("prefix_directional_caps"),
-            out.get("street_name_caps"),
-            out.get("road_type_caps"),
-            out.get("suffix_directional_caps"),
+            out.get("address_number"),
+            out.get("prefix_directional"),
+            out.get("street_name"),
+            out.get("road_type"),
+            out.get("suffix_directional"),
         )
         return " ".join(part for part in parts if part)
 
@@ -969,14 +969,14 @@ if __name__ == "__main__":
     for ex in worked_examples:
         # Tier 1: FullAddress (city/state/zip tail dropped automatically).
         out = standardize_feature_attributes({"F": ex["FullAddress"]}, FullAddress="F")
-        assert out["full_address_caps"] == ex["expected"], (
-            f"FullAddress FAILED for {ex['FullAddress']!r}: got {out['full_address_caps']!r}"
+        assert out["full_address"] == ex["expected"], (
+            f"FullAddress FAILED for {ex['FullAddress']!r}: got {out['full_address']!r}"
         )
 
         # Tier 2: PrimaryAddress (no city/state/zip to begin with).
         out = standardize_feature_attributes({"P": ex["PrimaryAddress"]}, PrimaryAddress="P")
-        assert out["full_address_caps"] == ex["expected"], (
-            f"PrimaryAddress FAILED for {ex['PrimaryAddress']!r}: got {out['full_address_caps']!r}"
+        assert out["full_address"] == ex["expected"], (
+            f"PrimaryAddress FAILED for {ex['PrimaryAddress']!r}: got {out['full_address']!r}"
         )
 
         # Tier 3: individual building-block fields. No FullAddress/
@@ -1000,7 +1000,7 @@ if __name__ == "__main__":
             Street_PostDirectional="POST",
             Street_PostType="TYPE",
         )
-        assert "full_address_caps" not in out and "primary_address_caps" not in out, (
+        assert "full_address" not in out and "primary_address" not in out, (
             f"Building blocks FAILED for {ex}: unexpected combined key in {out}"
         )
         assert _join_primary_segments(out) == ex["expected"], (
@@ -1014,8 +1014,8 @@ if __name__ == "__main__":
         {"SITE_ADDRESS": "133 S Burlington St, Apt 4, South Burlington, VT 05403"},
         FullAddress="SITE_ADDRESS",
     )
-    assert out["full_address_caps"] == "133 SOUTH BURLINGTON STREET, UNIT 4"
-    assert out["secondary_address_caps"] == "UNIT 4"
+    assert out["full_address"] == "133 SOUTH BURLINGTON STREET, UNIT 4"
+    assert out["secondary_address"] == "UNIT 4"
 
     # Primary/secondary already split across two combined columns.
     out = standardize_feature_attributes(
@@ -1024,8 +1024,8 @@ if __name__ == "__main__":
         AddressSecondaryAddress="MAIL_UNIT",
         OutputAttributePrefix="MAIL_STD_",
     )
-    assert out["MAIL_STD_full_address_caps"] == "88 SOUTH HILL ROAD, UNIT 2"
-    assert out["MAIL_STD_road_type_caps"] == "ROAD"
+    assert out["MAIL_STD_full_address"] == "88 SOUTH HILL ROAD, UNIT 2"
+    assert out["MAIL_STD_road_type"] == "ROAD"
 
     # Address number preserved as a low/high range across two columns
     # (e.g. a road-centerline segment), with no single AddressNumber. No
@@ -1036,8 +1036,8 @@ if __name__ == "__main__":
         AddressNumber_HighRange="HIGH",
         PrimaryName="NAME",
     )
-    assert "full_address_caps" not in out
-    assert out["address_number_caps"] == "1-5"
+    assert "full_address" not in out
+    assert out["address_number"] == "1-5"
     assert _join_primary_segments(out) == "1-5 MAIN STREET"
 
     # Half-value number built from a split AddressNumber + AddressNumber_Suffix.
@@ -1045,7 +1045,7 @@ if __name__ == "__main__":
         {"NUM": "33", "SUF": "1/2", "NAME": "Main St"},
         AddressNumber="NUM", AddressNumber_Suffix="SUF", PrimaryName="NAME",
     )
-    assert "full_address_caps" not in out
+    assert "full_address" not in out
     assert _join_primary_segments(out) == "33 1/2 MAIN STREET"
 
     # A word that's also a valid road type (Hill, Lake, ...) but is really
@@ -1057,15 +1057,15 @@ if __name__ == "__main__":
         {"NAME": "Canaan Hill", "NUM": "2896", "TYPE": "Rd"},
         PrimaryName="NAME", AddressNumber="NUM", Street_PostType="TYPE",
     )
-    assert out["street_name_caps"] == "CANAAN HILL"
-    assert out["road_type_caps"] == "ROAD"
+    assert out["street_name"] == "CANAAN HILL"
+    assert out["road_type"] == "ROAD"
 
     out = standardize_feature_attributes(
         {"NAME": "Lake Morey", "NUM": "10", "TYPE": "Rd"},
         PrimaryName="NAME", AddressNumber="NUM", Street_PostType="TYPE",
     )
-    assert out["street_name_caps"] == "LAKE MOREY"
-    assert out["road_type_caps"] == "ROAD"
+    assert out["street_name"] == "LAKE MOREY"
+    assert out["road_type"] == "ROAD"
 
     # ... but when the trailing word genuinely is a redundant duplicate of
     # the explicit road type (as opposed to coincidentally matching a
@@ -1076,8 +1076,8 @@ if __name__ == "__main__":
         PrimaryName="NAME", AddressNumber="NUM",
         Street_PreDirectional="PRE", Street_PostType="TYPE",
     )
-    assert out["street_name_caps"] == "MAIN"
-    assert out["road_type_caps"] == "STREET"
+    assert out["street_name"] == "MAIN"
+    assert out["road_type"] == "STREET"
 
     # Secondary unit built from a split abbreviation + number range instead
     # of one combined secondary-address column.
@@ -1087,14 +1087,14 @@ if __name__ == "__main__":
         AddressSecondaryNumber_LowRange="UNIT_LOW",
         AddressSecondaryNumber_HighRange="UNIT_HIGH",
     )
-    assert out["secondary_address_caps"] == "UNIT 1-5"
+    assert out["secondary_address"] == "UNIT 1-5"
 
     # No address-role attributes configured at all -> graceful empty
     # result, never an error (no combination is a strict requirement), and
     # no combined keys since nothing combined was ever supplied.
     out = standardize_feature_attributes({})
-    assert "full_address_caps" not in out and "primary_address_caps" not in out
-    assert out["address_number_caps"] is None
-    assert out["secondary_address_caps"] is None
+    assert "full_address" not in out and "primary_address" not in out
+    assert out["address_number"] is None
+    assert out["secondary_address"] is None
 
     print("\nAll assertions passed.")
