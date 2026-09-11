@@ -79,6 +79,8 @@ sync with what the code actually does.
 | `123 Main Street` | `123 MAIN STREET` | Graceful handling when there's no secondary unit at all (`secondary_address` is `None`) |
 | `88 South Hill Rd` (with trailing spaces) | `88 SOUTH HILL ROAD` | Leading/trailing whitespace trimmed |
 | `3 E Main St N, South Burlington, VT 05403` | `3 EAST MAIN STREET N` | A true full mailing address: trailing city/state/zip recognized and dropped automatically |
+| `2896 Canaan Hill Rd` | `2896 CANAAN HILL ROAD` | A word that's also a valid road type ("Hill") stays part of the street name when a *different* road type ("Rd") follows it |
+| `Route 2A` | `VT ROUTE 2A` | Alphanumeric route variants (2A, 4A, 5A, 7A, 7B) are always VT Routes, even though their base number (2) is a US Route |
 
 ## Testing
 

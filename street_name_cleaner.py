@@ -75,6 +75,9 @@ PO_BOX_RE = re.compile(r"^(?:P\s*O\s*B(?:OX)?|POB)\b\.?\s*(\d+)?", re.IGNORECASE
 INTERSTATE_RE = re.compile(r"^I[\s-]?(\d+[A-Z]?)\b")
 ROUTE_RE = re.compile(r"^(?:US\s+|VT\s+)?(?:ROUTE|RTE|RT)\b\.?\s*(\d+[A-Z]?)\b")
 
+# Vermont's actual US Routes. Alphanumeric variants of these numbers (2A,
+# 4A, 5A, 7A, 7B, ...) are all VT Routes, never US Routes -- see
+# `standardize_highways()`.
 US_ROUTES = {2, 4, 5, 7, 302}
 
 ORDINAL_MAP: Dict[int, str] = {
@@ -271,8 +274,12 @@ def standardize_highways(remainder: str) -> tuple[Optional[str], str]:
     match = ROUTE_RE.match(remainder)
     if match:
         route_num = match.group(1)
-        base_num = _to_number(route_num)
-        prefix = "US" if base_num in US_ROUTES else "VT"
+        # Only a plain numeric route number (no alphanumeric suffix) can be
+        # a US Route. VT's alphanumeric route variants (2A, 4A, 5A, 7A, 7B,
+        # ...) are all state routes, never US Routes, even when their base
+        # number matches one (e.g. "2A" is a VT Route, not US Route 2).
+        is_us_route = route_num.isdigit() and _to_number(route_num) in US_ROUTES
+        prefix = "US" if is_us_route else "VT"
         return f"{prefix} ROUTE {route_num}", remainder[match.end():].strip()
 
     return None, remainder
@@ -889,6 +896,10 @@ if __name__ == "__main__":
          "88 SOUTH HILL ROAD"),
         ("2896 Canaan Hill Rd",
          "2896 CANAAN HILL ROAD"),
+        ("Route 2A",
+         "VT ROUTE 2A"),
+        ("Route 7B",
+         "VT ROUTE 7B"),
     ]
 
     for raw, expected_full in cases:
