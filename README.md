@@ -59,6 +59,37 @@ Intended to be imported as a library (e.g. from an FME Workspace Python
 Caller / Custom Transformer) to clean full, primary, and secondary address
 columns.
 
+## Examples
+
+Every example below is taken directly from the module's self-test suite
+(`python street_name_cleaner.py`), so this table is guaranteed to stay in
+sync with what the code actually does.
+
+| Input | `full_address_caps` output | Demonstrates |
+| --- | --- | --- |
+| `123   N Main   St` | `123 NORTH MAIN STREET` | Collapsing extra internal whitespace; `N` as a prefix directional |
+| `33 1 / 2 St. Johnsbury Rd` | `33 1/2 SAINT JOHNSBURY ROAD` | Half-value spacing (`1 / 2` -> `1/2`); `St` as `SAINT` (a place name, not a road type) |
+| `I-89 E` | `INTERSTATE 89 E` | Interstate spelled out in full; suffix directional stays abbreviated |
+| `28-B Route 2` | `28B US ROUTE 2` | Alphanumeric merge (`28-B` -> `28B`); VT's US Routes list (2 is a US Route) |
+| `1st st south, apt #4` | `FIRST STREET S, UNIT 4` | Ordinal expansion (`1st` -> `FIRST`); `st` as `STREET` (a road type here, not `SAINT`); suffix directional abbreviated; `apt #4` -> `UNIT 4` |
+| `POB 123` | `PO BOX 123` | PO Box variant recognized and standardized |
+| `133 S Burlington St` | `133 SOUTH BURLINGTON STREET` | Prefix directional spelled out in full (contrast with the suffix-directional cases above) |
+| `VT Route 22A W` | `VT ROUTE 22A W` | VT Route with an alphanumeric route number, already-present `VT` prefix preserved |
+| `PO BOX 45, Ste # 2` | `PO BOX 45, UNIT 2` | PO Box combined with a secondary unit; `#` stripped |
+| `123 St Paul St` | `123 SAINT PAUL STREET` | `St` disambiguated two different ways in the same string: `SAINT` (place name) vs. `STREET` (road type) |
+| `44-A N. Main st E., apt# 3` | `44A NORTH MAIN STREET E, UNIT 3` | Stress test: alphanumeric number, prefix directional, road type, suffix directional, and secondary unit all together |
+| `123 Main Street` | `123 MAIN STREET` | Graceful handling when there's no secondary unit at all (`secondary_address_caps` is `None`) |
+| `88 South Hill Rd` (with trailing spaces) | `88 SOUTH HILL ROAD` | Leading/trailing whitespace trimmed |
+| `3 E Main St N, South Burlington, VT 05403` | `3 EAST MAIN STREET N` | A true full mailing address: trailing city/state/zip recognized and dropped automatically |
+
+Two additional things the self-test verifies about the `..._title` (Title
+Case) output:
+
+| Input | Title Case output | Demonstrates |
+| --- | --- | --- |
+| `88 South Hill Rd` | `88 South Hill Road` (`full_address_title`) | Ordinary Title Case |
+| `28-A Main St` | `28A Main Street` (`primary_address_title`) | Alphanumeric address numbers stay fully capitalized in Title Case (never `28a`) |
+
 ## Testing
 
 ```
@@ -168,10 +199,12 @@ A few more combinations, to show individual fields in isolation:
 
 | Scenario | Fields set | Result |
 | --- | --- | --- |
-| Half-value number | `AddressNumber="33"`, `AddressNumber_Suffix="1/2"`, `PrimaryName="Main St"` | `33 1/2 MAIN STREET` |
-| Address-number range (road-centerline segment) | `AddressNumber_LowRange="1"`, `AddressNumber_HighRange="5"`, `PrimaryName="Main St"` | `1-5 MAIN STREET` |
-| Secondary unit from a split abbreviation + range | `AddressSecondaryAbbreviation="Apt"`, `AddressSecondaryNumber_LowRange="1"`, `AddressSecondaryNumber_HighRange="5"` | `UNIT 1-5` |
-| Full address with an embedded unit and a city/state/zip tail | `FullAddress="133 S Burlington St, Apt 4, South Burlington, VT 05403"` | `133 SOUTH BURLINGTON STREET, UNIT 4` |
+| Full address with an embedded unit and a city/state/zip tail | `FullAddress="133 S Burlington St, Apt 4, South Burlington, VT 05403"` | `full_address_caps` = `133 SOUTH BURLINGTON STREET, UNIT 4` |
+| Primary + secondary as two combined columns, with an output prefix | `PrimaryAddress="88 South Hill Rd"`, `AddressSecondaryAddress="Ste 2"`, `OutputAttributePrefix="MAIL_STD_"` | `MAIL_STD_full_address_caps` = `88 SOUTH HILL ROAD, UNIT 2` (every output attribute is prefixed with `MAIL_STD_`) |
+| Address-number range (road-centerline segment) | `AddressNumber_LowRange="1"`, `AddressNumber_HighRange="5"`, `PrimaryName="Main St"` | `address_number_caps` = `1-5`, `full_address_caps` = `1-5 MAIN STREET` |
+| Half-value number from a split `AddressNumber` + `AddressNumber_Suffix` | `AddressNumber="33"`, `AddressNumber_Suffix="1/2"`, `PrimaryName="Main St"` | `33 1/2 MAIN STREET` |
+| Secondary unit from a split abbreviation + range | `AddressSecondaryAbbreviation="Apt"`, `AddressSecondaryNumber_LowRange="1"`, `AddressSecondaryNumber_HighRange="5"` | `secondary_address_caps` = `UNIT 1-5` |
+| No address-role parameters set at all | *(nothing)* | Every output value is `None` -- never an error |
 
 This module only standardizes address *numbers* and *street names*; it
 never inspects or cleans city, state, or zip/zip+4 values, beyond
