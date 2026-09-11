@@ -70,32 +70,49 @@ edge cases.
 
 ## Using from FME Form
 
-Different feature types name their address columns differently, and not
-every dataset splits a full/primary/secondary address the same way (or has
-all three at all). Rather than hardcoding column names, wire this module's
-`AddressCleaner` class into a **PythonCaller** transformer set to "Class"
-mode:
+Different feature types name -- and split up -- their address columns very
+differently: some hand you one complete mailing address string, some split
+primary/secondary into two columns, and some (like Vermont's E911 road
+centerline/address point data) split everything down to individual
+NENA/USPS fields, sometimes even preserving a low/high address-number range
+across two columns instead of a single house number. Rather than hardcoding
+column names, wire this module's `AddressCleaner` class into a
+**PythonCaller** transformer set to "Class" mode:
 
 ```
 Class or Function to Process Features: street_name_cleaner.AddressCleaner
 ```
 
 FME reads the class's constructor parameters and exposes each one as a
-transformer parameter, so the column mapping is a dialog setting, not code:
+transformer parameter, so the column mapping is a dialog setting, not code.
+Every parameter is optional and independent -- supply whichever ones exist
+on a given feature type and leave the rest blank; there is no required
+combination:
 
 | Parameter | Meaning |
 | --- | --- |
-| `full_address_attr` | Input attribute holding a full/combined address string (e.g. `SITE_ADDRESS`), if this feature type has one. |
-| `primary_address_attr` | Input attribute holding just the primary/street address, if the dataset keeps it separate from the unit. |
-| `secondary_address_attr` | Input attribute holding just the secondary/unit address, if the dataset keeps it separate. |
-| `output_attr_prefix` | Optional prefix applied to every output attribute (e.g. `MAIL_`), useful if the transformer runs more than once in one workspace against different address roles. |
+| `full_address_attr` | A full/combined address string that may still carry a trailing city/state/zip (e.g. `"3 E Main St N, South Burlington, VT 05403"`); that tail is dropped automatically. Highest priority: if set, every other primary-address parameter is ignored. |
+| `primary_address_attr` | A combined primary (street) address with no city/state/zip, e.g. `"3 E Main St N"`. Used when `full_address_attr` is blank; if set, the granular fields below are ignored. |
+| `street_name_attr` | Just the street name, e.g. `"Main St"` (may or may not include the suffix -- see `street_suffix_attr`) or `"Main"`. |
+| `address_number_attr` | A single house number, e.g. `"3"`. |
+| `address_number_low_attr` / `address_number_high_attr` | Low/high end of an address-number range preserved in separate columns (e.g. road-centerline segments); used when `address_number_attr` is blank. |
+| `prefix_directional_attr` | e.g. `"E"`. |
+| `street_suffix_attr` | e.g. `"St"`. When set, `street_name_attr` is treated as the bare name (no suffix). |
+| `post_directional_attr` | e.g. `"N"`. |
+| `secondary_address_attr` | A combined secondary/unit address, e.g. `"Apt 1"`. Highest priority for the secondary address; if set, the two parameters below are ignored. |
+| `secondary_abbreviation_attr` | e.g. `"Apt"`. |
+| `secondary_number_low_attr` / `secondary_number_high_attr` | Low/high end of a secondary-unit number range preserved in separate columns; used when `secondary_address_attr` is blank. |
+| `output_attr_prefix` | Optional prefix applied to every attribute this transformer writes back (e.g. `MAIL_`), useful if the same transformer runs more than once in one workspace against different address roles. |
 
-Leave whichever address-role parameters don't apply blank; at least one of
-`full_address_attr` / `primary_address_attr` / `secondary_address_attr` must
-be set, or the transformer raises an error at workspace startup. The
-transformer writes back `full_address_caps`, `full_address_title`, and every
-key from `standardize_address()`'s `parsed_segments` (optionally prefixed)
-onto each feature.
+A feature type with none of these configured simply yields an empty result
+-- never an error. The transformer writes back `full_address_caps`,
+`full_address_title`, and every key from `standardize_address()`'s
+`parsed_segments` (optionally prefixed) onto each feature.
+
+This module only standardizes address *numbers* and *street names*; it
+never inspects or cleans city, state, or zip/zip+4 values, beyond
+recognizing and discarding a trailing city/state/zip tail on
+`full_address_attr` so it doesn't get mistaken for part of the street.
 
 The same logic is available outside of FME via
 `standardize_feature_attributes(attributes, ...)`, which takes a plain
