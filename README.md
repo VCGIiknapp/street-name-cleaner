@@ -165,7 +165,7 @@ class AddressCleaner(object):
             AddressSecondaryAbbreviation="",
             AddressSecondaryNumber_LowRange="",
             AddressSecondaryNumber_HighRange="",
-            OutputAttributePrefix=""              # (Optional) e.g., "MAIL_" would create "MAIL_Clean_STREET_NAME"
+            OutputAttributePrefix=""              # (Optional) e.g., "MAIL_" would create "MAIL_STREET_NAME" instead of "Clean_STREET_NAME"
         )
 
     def input(self, feature):
@@ -322,7 +322,7 @@ secondary unit, so see the "Other examples" table below instead.
 
 | Parameter | Meaning |
 | --- | --- |
-| `OutputAttributePrefix` | Optional prefix applied to every attribute this transformer writes back (e.g. `MAIL_`), useful if the same transformer runs more than once in one workspace against different address roles. |
+| `OutputAttributePrefix` | Optional prefix applied to every attribute this transformer writes back (e.g. `MAIL_`), useful if the same transformer runs more than once in one workspace against different address roles. **Replaces** the default `Clean_` marker entirely -- it never stacks on top of it (e.g. `MAIL_STREET_NAME`, never `MAIL_Clean_STREET_NAME`). |
 
 A feature type with none of these configured simply yields an empty result
 -- never an error. See "Output naming" above for the full rule; in short:
@@ -342,7 +342,7 @@ set" cell:
 | Scenario | Fields set | Result |
 | --- | --- | --- |
 | Full address with an embedded unit and a city/state/zip tail | `FullAddress="SITE_ADDRESS"` = `"133 S Burlington St, Apt 4, South Burlington, VT 05403"` | `Clean_SITE_ADDRESS` = `133 SOUTH BURLINGTON STREET, UNIT 4`; `Clean_AddressSecondaryAddress` = `UNIT 4` |
-| Primary + secondary as two combined columns, with an output prefix | `PrimaryAddress="MAIL_PRIMARY"` = `"88 South Hill Rd"`, `AddressSecondaryAddress="MAIL_UNIT"` = `"Ste 2"`, `OutputAttributePrefix="MAIL_STD_"` | `MAIL_STD_Clean_MAIL_PRIMARY` = `88 SOUTH HILL ROAD`; `MAIL_STD_Clean_MAIL_UNIT` = `UNIT 2`; `MAIL_STD_Clean_Street_PostType` = `ROAD` (canonical name, since `Street_PostType` wasn't configured; every attribute gets the `MAIL_STD_` prefix) |
+| Primary + secondary as two combined columns, with an output prefix | `PrimaryAddress="MAIL_PRIMARY"` = `"88 South Hill Rd"`, `AddressSecondaryAddress="MAIL_UNIT"` = `"Ste 2"`, `OutputAttributePrefix="MAIL_STD_"` | `MAIL_STD_MAIL_PRIMARY` = `88 SOUTH HILL ROAD`; `MAIL_STD_MAIL_UNIT` = `UNIT 2`; `MAIL_STD_Street_PostType` = `ROAD` (canonical name, since `Street_PostType` wasn't configured; `MAIL_STD_` replaces the default `Clean_` marker on every attribute, rather than stacking on top of it) |
 | Address-number range (road-centerline segment), building blocks only | `AddressNumber_LowRange="1"`, `AddressNumber_HighRange="5"`, `PrimaryName="NAME"` = `"Main St"` | `Clean_AddressNumber` = `1-5` (canonical, since `AddressNumber` itself wasn't configured); `Clean_NAME` = `MAIN STREET` |
 | Half-value number from a split `AddressNumber` + `AddressNumber_Suffix` | `AddressNumber="NUM"` = `"33"`, `AddressNumber_Suffix="SUF"` = `"1/2"`, `PrimaryName="NAME"` = `"Main St"` | `Clean_NUM` = `33 1/2`; `Clean_NAME` = `MAIN STREET` |
 | Secondary unit from a split abbreviation + range | `AddressSecondaryAbbreviation="Apt"`, `AddressSecondaryNumber_LowRange="1"`, `AddressSecondaryNumber_HighRange="5"` | `Clean_AddressSecondaryAddress` = `UNIT 1-5` (canonical, since `AddressSecondaryAddress` itself wasn't configured) |

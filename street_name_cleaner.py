@@ -674,11 +674,16 @@ def parse_primary_remainder(
 #                               this transformer writes back (e.g. "MAIL_"),
 #                               useful if the same transformer runs more than
 #                               once in one workspace against different
-#                               address roles.
+#                               address roles. Replaces the default "Clean_"
+#                               marker entirely -- it never stacks on top of
+#                               it (e.g. "MAIL_STREET_NAME", never
+#                               "MAIL_Clean_STREET_NAME").
 #
 # Output naming mirrors the input: for every role parameter that's given an
 # attribute name, the output includes a `Clean_<that name>` attribute (e.g.
-# `PrimaryName="STREET_NAME"` produces `Clean_STREET_NAME`). `PrimaryName`,
+# `PrimaryName="STREET_NAME"` produces `Clean_STREET_NAME`), or
+# `OutputAttributePrefix<that name>` if `OutputAttributePrefix` is set.
+# `PrimaryName`,
 # `AddressNumber`, `Street_PreDirectional`, `Street_PostDirectional`,
 # `Street_PostType`, and `AddressSecondaryAddress` are *always* produced
 # this way -- falling back to their own parameter name (e.g.
@@ -814,9 +819,10 @@ def standardize_feature_attributes(
     `PrimaryAddress` was itself supplied, rather than being invented a name
     for when it wasn't.
 
-    Every output attribute name is optionally prefixed with
-    `OutputAttributePrefix`, ready to be merged back onto the feature's
-    attributes.
+    Every output attribute name is marked with a `Clean_` prefix by default;
+    if `OutputAttributePrefix` is set, it replaces that default marker
+    entirely (it never stacks on top of it), ready to be merged back onto
+    the feature's attributes.
     """
 
     def _get(attr_name: str) -> str:
@@ -854,9 +860,10 @@ def standardize_feature_attributes(
         full_address = f"{primary_address}, {secondary_address}" if primary_address else secondary_address
 
     flat: Dict[str, Any] = {}
+    marker = OutputAttributePrefix or "Clean_"
 
     def emit(configured_name: str, canonical_name: str, value: Optional[str]) -> None:
-        flat[f"Clean_{(configured_name.strip() or canonical_name)}"] = value
+        flat[f"{marker}{(configured_name.strip() or canonical_name)}"] = value
 
     if FullAddress.strip():
         emit(FullAddress, "FullAddress", full_address)
@@ -870,8 +877,6 @@ def standardize_feature_attributes(
     emit("", "StreetName", name)
     emit(AddressSecondaryAddress, "AddressSecondaryAddress", secondary_address)
 
-    if OutputAttributePrefix:
-        flat = {f"{OutputAttributePrefix}{key}": value for key, value in flat.items()}
     return flat
 
 
@@ -1166,9 +1171,12 @@ if __name__ == "__main__":
         AddressSecondaryAddress="MAIL_UNIT",
         OutputAttributePrefix="MAIL_STD_",
     )
-    assert out["MAIL_STD_Clean_MAIL_PRIMARY"] == "88 SOUTH HILL ROAD"
-    assert out["MAIL_STD_Clean_MAIL_UNIT"] == "UNIT 2"
-    assert out["MAIL_STD_Clean_Street_PostType"] == "ROAD"
+    assert out["MAIL_STD_MAIL_PRIMARY"] == "88 SOUTH HILL ROAD"
+    assert out["MAIL_STD_MAIL_UNIT"] == "UNIT 2"
+    assert out["MAIL_STD_Street_PostType"] == "ROAD"
+    # OutputAttributePrefix replaces the default "Clean_" marker entirely --
+    # it never stacks on top of it (e.g. never "MAIL_STD_Clean_...").
+    assert not any(key.startswith("MAIL_STD_Clean_") for key in out)
 
     # Address number preserved as a low/high range across two columns
     # (e.g. a road-centerline segment), with no single AddressNumber --
