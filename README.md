@@ -81,6 +81,7 @@ sync with what the code actually does.
 | `3 E Main St N, South Burlington, VT 05403` | `3 EAST MAIN STREET N` | A true full mailing address: trailing city/state/zip recognized and dropped automatically |
 | `2896 Canaan Hill Rd` | `2896 CANAAN HILL ROAD` | A word that's also a valid road type ("Hill") stays part of the street name when a *different* road type ("Rd") follows it |
 | `Route 2A` | `VT ROUTE 2A` | Alphanumeric route variants (2A, 4A, 5A, 7A, 7B) are always VT Routes, even though their base number (2) is a US Route |
+| `26 G ST` | `26 G STREET` | A single letter after the number isn't always an alphanumeric suffix (like `28-A` -> `28A`) -- here "G" is a stand-alone single-letter street name, so it's left as the street name rather than merged into the address number |
 
 ## Testing
 

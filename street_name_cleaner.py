@@ -217,6 +217,21 @@ def _merge_address_number_parts(prefix: str, base: Optional[str], suffix: str) -
     return result
 
 
+def _is_lone_street_name_remainder(remainder: str) -> bool:
+    """True if, after a candidate single-letter address-number suffix, all
+    that's left is empty, a bare road type (e.g. "ST"), or a road type plus
+    a trailing suffix directional (e.g. "ST N") -- with no separate street
+    name in between. That's the signal that the letter itself is actually a
+    stand-alone single-letter street name (e.g. "26 G St", where "G" is the
+    whole street name, not a "26-G"-style address-number suffix), rather
+    than a genuine alphanumeric suffix on the number (e.g. "28-A Main St",
+    where "Main St" still follows)."""
+    tokens = [t for t in remainder.strip().split(" ") if t]
+    if tokens and tokens[-1].rstrip(",") in SUFFIX_DIRECTIONAL_ABBR:
+        tokens = tokens[:-1]
+    return not tokens or (len(tokens) == 1 and tokens[0].rstrip(",") in ROAD_TYPE_MAP)
+
+
 def extract_address_number(text: str) -> tuple[Optional[str], str]:
     """Pull a leading house number off `text`, honoring half-value,
     alphanumeric, and camp/lot address-number-prefix (e.g. "H 5 Main St" ->
@@ -232,9 +247,15 @@ def extract_address_number(text: str) -> tuple[Optional[str], str]:
         return number, body[match.end():]
 
     # Alphanumeric, e.g. "28-A" / "28 A" -> "28A". A lone N/S/E/W is never
-    # merged in here since that's a directional word, not a unit letter.
+    # merged in here since that's a directional word, not a unit letter,
+    # and neither is a letter that's actually a stand-alone single-letter
+    # street name (e.g. "26 G St") -- see `_is_lone_street_name_remainder()`.
     match = re.match(r"^(\d+)[\s-]?([A-Za-z])\b\s*", body)
-    if match and match.group(2).upper() not in PREFIX_DIRECTIONAL_MAP:
+    if (
+        match
+        and match.group(2).upper() not in PREFIX_DIRECTIONAL_MAP
+        and not _is_lone_street_name_remainder(body[match.end():])
+    ):
         number = _merge_address_number_parts(prefix, match.group(1), match.group(2))
         return number, body[match.end():]
 
@@ -992,6 +1013,10 @@ if __name__ == "__main__":
          "US ROUTE 2"),
         ("Route 7B",
          "VT ROUTE 7B"),
+        ("26 G ST",
+         "26 G STREET"),
+        ("26 G St N",
+         "26 G STREET N"),
     ]
 
     for raw, expected_full in cases:
@@ -1010,6 +1035,16 @@ if __name__ == "__main__":
     # module doesn't touch -- it should be recognized and dropped.
     result = standardize_address("3 E Main St N, South Burlington, VT 05403")
     assert result["full_address"] == "3 EAST MAIN STREET N"
+
+    # A single letter isn't always an address-number suffix (e.g. "28-A"
+    # merging to "28A") -- it can be a legitimate stand-alone single-letter
+    # street name (e.g. "G Street"). Only merge the letter into the number
+    # when something more than a bare road type actually follows it.
+    result = standardize_address("26 G ST")
+    assert result["parsed_segments"]["address_number"] == "26"
+    assert result["parsed_segments"]["street_name"] == "G"
+    assert result["parsed_segments"]["road_type"] == "STREET"
+    assert result["full_address"] == "26 G STREET"
 
     # --- FME attribute-mapping wrapper ---------------------------------
     #
@@ -1177,6 +1212,14 @@ if __name__ == "__main__":
     # OutputAttributePrefix replaces the default "Clean_" marker entirely --
     # it never stacks on top of it (e.g. never "MAIL_STD_Clean_...").
     assert not any(key.startswith("MAIL_STD_Clean_") for key in out)
+
+    # A stand-alone single-letter street name (e.g. "G Street") isn't
+    # mistaken for a "26-G"-style alphanumeric address-number suffix.
+    out = standardize_feature_attributes({"ADDR": "26 G ST"}, PrimaryAddress="ADDR")
+    assert out["Clean_ADDR"] == "26 G STREET"
+    assert out["Clean_AddressNumber"] == "26"
+    assert out["Clean_StreetName"] == "G"
+    assert out["Clean_Street_PostType"] == "STREET"
 
     # Address number preserved as a low/high range across two columns
     # (e.g. a road-centerline segment), with no single AddressNumber --
