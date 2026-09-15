@@ -82,6 +82,8 @@ sync with what the code actually does.
 | `2896 Canaan Hill Rd` | `2896 CANAAN HILL ROAD` | A word that's also a valid road type ("Hill") stays part of the street name when a *different* road type ("Rd") follows it |
 | `Route 2A` | `VT ROUTE 2A` | Alphanumeric route variants (2A, 4A, 5A, 7A, 7B) are always VT Routes, even though their base number (2) is a US Route |
 | `26 G ST` | `26 G STREET` | A single letter after the number isn't always an alphanumeric suffix (like `28-A` -> `28A`) -- here "G" is a stand-alone single-letter street name, so it's left as the street name rather than merged into the address number |
+| `5 E St` | `5 E STREET` | Same idea, but the single-letter street name also happens to be a cardinal direction ("E") -- it's kept as the street name, not spelled out as a prefix directional ("EAST") |
+| `48 16 Outerbay Way` | `48 16 OUTERBAY WAY` | A two-part whole-number address number (rural/lot-style addressing) stays together as the address number, not split with "16" leaking into the street name |
 
 ## Testing
 

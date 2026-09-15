@@ -246,6 +246,17 @@ def extract_address_number(text: str) -> tuple[Optional[str], str]:
         number = _merge_address_number_parts(prefix, f"{match.group(1)} {match.group(2)}", "")
         return number, body[match.end():]
 
+    # Double whole-number, e.g. "48 16 Outerbay Way" -> address number
+    # "48 16" (some rural/lot-style addressing uses a two-part whole
+    # number). Only treated as part of the number when a real name clearly
+    # follows -- a bare second number followed by nothing but a road type
+    # could instead be a legitimate numbered street name (e.g. "5 42 St"),
+    # same disambiguation as the single-letter case below.
+    match = re.match(r"^(\d+)\s+(\d+)\b\s*", body)
+    if match and not _is_lone_street_name_remainder(body[match.end():]):
+        number = _merge_address_number_parts(prefix, f"{match.group(1)} {match.group(2)}", "")
+        return number, body[match.end():]
+
     # Alphanumeric, e.g. "28-A" / "28 A" -> "28A". A lone N/S/E/W is never
     # merged in here since that's a directional word, not a unit letter,
     # and neither is a letter that's actually a stand-alone single-letter
@@ -310,12 +321,22 @@ def standardize_highways(remainder: str) -> tuple[Optional[str], str]:
 # Directional parsing
 # ---------------------------------------------------------------------------
 
-def parse_prefix_directional(remainder: str) -> tuple[Optional[str], str]:
+def parse_prefix_directional(remainder: str, only_if_more_follows: bool = False) -> tuple[Optional[str], str]:
+    """Extract a leading single-letter prefix directional (e.g. "E" in
+    "E Main St"). When `only_if_more_follows` is True, the letter is only
+    treated as a prefix directional if something more than a bare road type
+    remains after it; otherwise (e.g. "E St", with nothing else left) it's
+    assumed to be a stand-alone single-letter street name (e.g. "E Street")
+    and left alone -- same disambiguation as `_is_lone_street_name_remainder()`.
+    When False (the normal free-text case), a leading abbreviation is
+    always treated as a prefix directional, as before."""
     tokens = remainder.split(" ", 1)
     first = tokens[0] if tokens else ""
     if first in PREFIX_DIRECTIONAL_MAP:
-        rest = tokens[1] if len(tokens) > 1 else ""
-        return PREFIX_DIRECTIONAL_MAP[first], rest.strip()
+        rest = (tokens[1] if len(tokens) > 1 else "").strip()
+        if only_if_more_follows and _is_lone_street_name_remainder(rest):
+            return None, remainder
+        return PREFIX_DIRECTIONAL_MAP[first], rest
     return None, remainder
 
 
@@ -405,8 +426,12 @@ def parse_street_remainder(
 
     # Any directional word left inside the street name itself (i.e. not the
     # recognized prefix/suffix position) must be spelled out in full, never
-    # abbreviated (rule 5).
-    tokens = [PREFIX_DIRECTIONAL_MAP.get(t, t) for t in tokens]
+    # abbreviated (rule 5) -- but only when there's more than just this one
+    # token. A single remaining token could itself be a legitimate
+    # stand-alone single-letter street name (e.g. "E" in "E Street") rather
+    # than an abbreviation embedded within a longer name.
+    if len(tokens) > 1:
+        tokens = [PREFIX_DIRECTIONAL_MAP.get(t, t) for t in tokens]
 
     street_name = " ".join(tokens) if tokens else None
     return street_name, road_type, suffix_directional
@@ -469,7 +494,7 @@ def standardize_address(raw_address: str) -> Dict[str, Any]:
         remainder = remainder.strip()
 
         if address_number:
-            prefix_directional, remainder = parse_prefix_directional(remainder)
+            prefix_directional, remainder = parse_prefix_directional(remainder, only_if_more_follows=True)
 
         route_phrase, route_rest = standardize_highways(remainder)
         if route_phrase:
@@ -606,14 +631,27 @@ def parse_primary_remainder(
     directional from its own separate field, so this is confirmed redundant
     -- otherwise it's assumed to be part of the name, same as any other
     word. A trailing single-letter abbreviation (N/S/E/W) is still always
-    treated as unambiguous. This only applies to `PrimaryName`-style input
-    (a caller that has its own dedicated suffix-directional field to fall
-    back on); free-text parsing via `standardize_address()` has no such
-    field, so it keeps stripping any recognized trailing directional word.
+    treated as unambiguous.
+
+    A *leading* single-letter abbreviation is handled the same way: it's
+    only treated as a prefix directional if something more than a bare road
+    type remains after it (`parse_prefix_directional(..., only_if_more_follows=True)`);
+    otherwise (e.g. "E St", with nothing else left) it's a stand-alone
+    single-letter street name and stays as-is. Unlike the trailing-word
+    case above, this one has no pinned free-text test requiring the old
+    "always strip" behavior, so `standardize_address()`'s own primary-
+    address parsing applies the same disambiguation too (e.g. "5 E St"
+    standardizes to "5 E STREET", not "5 EAST STREET").
+
+    The trailing-suffix-directional-word disambiguation, by contrast, only
+    applies to `PrimaryName`-style input (a caller that has its own
+    dedicated suffix-directional field to fall back on); free-text parsing
+    via `standardize_address()` keeps stripping any recognized trailing
+    directional word, per its own pinned test case ("1st st south, apt #4").
     Returns (prefix_directional, street_name, road_type, suffix_directional).
     """
     text = clean_whitespace((text or "").upper().replace(".", ""))
-    prefix_directional, remainder = parse_prefix_directional(text)
+    prefix_directional, remainder = parse_prefix_directional(text, only_if_more_follows=True)
 
     route_phrase, route_rest = standardize_highways(remainder)
     if route_phrase:
@@ -1017,6 +1055,10 @@ if __name__ == "__main__":
          "26 G STREET"),
         ("26 G St N",
          "26 G STREET N"),
+        ("5 E St",
+         "5 E STREET"),
+        ("48 16 Outerbay Way",
+         "48 16 OUTERBAY WAY"),
     ]
 
     for raw, expected_full in cases:
@@ -1220,6 +1262,35 @@ if __name__ == "__main__":
     assert out["Clean_AddressNumber"] == "26"
     assert out["Clean_StreetName"] == "G"
     assert out["Clean_Street_PostType"] == "STREET"
+
+    # A stand-alone single-letter street name that also happens to be a
+    # cardinal direction (e.g. "E Street") isn't mistaken for a prefix
+    # directional attached to the following road type. This is specific to
+    # the granular PrimaryName path (no address number mixed in, unlike
+    # PrimaryAddress/FullAddress, which still treat a leading single-letter
+    # abbreviation as an unconditional prefix directional per rule 5).
+    out = standardize_feature_attributes({"N": "E ST"}, PrimaryName="N")
+    assert out["Clean_N"] == "E STREET"
+    assert out["Clean_Street_PreDirectional"] is None
+    assert out["Clean_StreetName"] == "E"
+    assert out["Clean_Street_PostType"] == "STREET"
+
+    # A two-part whole-number address number (e.g. rural/lot-style
+    # addressing) is kept together as the address number, with a space,
+    # rather than the second number leaking into the street name.
+    out = standardize_feature_attributes({"ADDR": "48 16 Outerbay Way"}, PrimaryAddress="ADDR")
+    assert out["Clean_ADDR"] == "48 16 OUTERBAY WAY"
+    assert out["Clean_AddressNumber"] == "48 16"
+    assert out["Clean_StreetName"] == "OUTERBAY"
+    assert out["Clean_Street_PostType"] == "WAY"
+
+    # ... but a bare second number followed by nothing but a road type is
+    # left alone, since it could instead be a legitimate numbered street
+    # name (e.g. "5 42 St" -- house number 5 on a street literally named
+    # "42", not address number "5 42").
+    out = standardize_feature_attributes({"ADDR": "5 42 St"}, PrimaryAddress="ADDR")
+    assert out["Clean_AddressNumber"] == "5"
+    assert out["Clean_StreetName"] == "42"
 
     # Address number preserved as a low/high range across two columns
     # (e.g. a road-centerline segment), with no single AddressNumber --
