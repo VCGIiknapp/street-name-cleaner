@@ -198,38 +198,77 @@ exec(script_code, dynamic_module.__dict__)
 # 3. Grab the downloaded class
 DownloadedCleaner = dynamic_module.AddressCleaner
 
-# 4. Create a local class that FME can use to map your granular attributes
-class AddressCleaner(object):
+# 4. Create a local class that INHERITS from the downloaded script.
+class AddressCleaner(DownloadedCleaner):
     def __init__(self):
-        # ========================================================
-        # SET YOUR COLUMN NAMES HERE:
-        # Put your exact FME attribute names inside the quotes.
-        # Leave any that you don't need as empty strings ("").
-        # ========================================================
-        self.cleaner = DownloadedCleaner(
-            FullAddress="",                      # Example: "SITE_ADDRESS"
-            PrimaryAddress="",
-            PrimaryName="",                      # Example: "STREET_NAME"
-            AddressNumber="",                    # Example: "HOUSE_NUM"
-            AddressNumber_LowRange="",
-            AddressNumber_HighRange="",
+        """
+        ===========================================================================
+        SET YOUR COLUMN NAMES HERE
+        ===========================================================================
+        Map your FME attribute names (as strings) to the parameters below. 
+        Leave the string empty ("") for any attributes you don't have.
+        
+        PERFORMANCE & ACCURACY NOTES:
+        - TIER 1 (Best): Provide `AddressNumber` + `PrimaryName`.
+        - TIER 2 (Good): Provide `AddressNumber` + Subparts (`StreetName`, 
+                         `Street_PreDirectional`, etc.).
+        - TIER 3 (Least Preferred): Provide `PrimaryAddress` or `FullAddress`. 
+                         This forces the script to parse the string and make 
+                         assumptions that may be incorrect.
+                         
+        EXAMPLE OF ADDRESS PARTS:
+        FullAddress:             "137 E Main St, Hyde Park, VT 05655"
+        PrimaryAddress:          "137 E Main St"
+        AddressNumber:           "137"
+        PrimaryName:             "E Main St"
+        Street_PreDirectional:   "E"
+        StreetName:              "Main"
+        Street_PostType:         "ST"
+        Street_PostDirectional:  "n/a"
+        ===========================================================================
+        """
+        super().__init__(
+            # --- TIER 1: MOST EFFICIENT ---
+            # Best if you have the number and the full street name already separated.
+            AddressNumber="", 
+            PrimaryName="", 
+            
+            # --- TIER 2: ALTERNATIVE EFFICIENT ---
+            # Use these if you don't have PrimaryName, but have the street parts.
+            StreetName="", 
+            Street_PreDirectional="",            
+            Street_PostDirectional="",
+            Street_PostType="",                  
+            
+            # --- TIER 3: LEAST PREFERRED (Forces script parsing) ---
+            # Use only if your data is unsegmented.
+            PrimaryAddress="",                   
+            FullAddress="",                      
+            
+            # --- ADDITIONAL ADDRESS NUMBER MODIFIERS ---
             AddressNumber_Prefix="",
             AddressNumber_Suffix="",
-            Street_PreDirectional="",            # Example: "PRE_DIR"
-            Street_PostDirectional="",
-            Street_PostType="",                  # Example: "ROAD_TYPE"
-            AddressSecondaryAddress="",          # Example: "APT_UNIT"
+            AddressNumber_LowRange="", 
+            AddressNumber_HighRange="",
+            
+            # --- SECONDARY ADDRESS INFO (Units, Suites, etc.) ---
+            AddressSecondaryAddress="",          
             AddressSecondaryAbbreviation="",
             AddressSecondaryNumber_LowRange="",
             AddressSecondaryNumber_HighRange="",
-            OutputAttributePrefix=""              # (Optional) e.g., "MAIL_" would create "MAIL_STREET_NAME" instead of "Clean_STREET_NAME"
+            
+            # --- OUTPUT SETTINGS ---
+            OutputAttributePrefix="CLEAN_"       
         )
 
     def input(self, feature):
-        self.cleaner.input(feature)
+        # Passes the FME feature to the parent class for processing
+        super().input(feature)
 
     def close(self):
-        self.cleaner.close()
+        # Ensures clean breakdown if the parent class uses it
+        if hasattr(super(), 'close'):
+            super().close()
 ```
 
 Because the repo is **private**, this only works if the FME engine running
