@@ -105,6 +105,20 @@ SUFFIX_DIRECTIONAL_ABBR: Dict[str, str] = {
     "NORTH": "N", "SOUTH": "S", "EAST": "E", "WEST": "W",
 }
 
+# Same as INTERSTATE_RE / ROUTE_RE, but anchored to the *end* of the text
+# (with an optional trailing suffix directional still allowed after the
+# route/interstate number) instead of the start, and found anywhere via
+# `.search()` rather than requiring the highway to lead the string. Used to
+# detect a local alias road name given *before* the highway (e.g. "Weston Rd
+# Route 155") -- see `_detect_reversed_highway_alias()`.
+_TRAILING_DIRECTIONAL_ALT = "|".join(SUFFIX_DIRECTIONAL_ABBR)
+TRAILING_INTERSTATE_RE = re.compile(
+    r"I[\s-]?(\d+[A-Z]?)\b(?:\s+(" + _TRAILING_DIRECTIONAL_ALT + r"))?\s*$"
+)
+TRAILING_ROUTE_RE = re.compile(
+    r"(?:US\s+|VT\s+)?(?:ROUTE|RTE|RT)\b\.?\s*(\d+[A-Z]?)\b(?:\s+(" + _TRAILING_DIRECTIONAL_ALT + r"))?\s*$"
+)
+
 SECONDARY_UNIT_MAP: Dict[str, str] = {
     "APT": "UNIT", "APARTMENT": "UNIT", "STE": "UNIT", "SUITE": "UNIT",
     "ROOM": "UNIT", "RM": "UNIT", "SPC": "UNIT", "SPACE": "UNIT", "UNIT": "UNIT",
@@ -317,6 +331,97 @@ def standardize_highways(remainder: str) -> tuple[Optional[str], str]:
     return None, remainder
 
 
+def _route_phrase_for(route_num: str, is_interstate: bool) -> str:
+    if is_interstate:
+        return f"INTERSTATE {route_num}"
+    is_us_route = route_num.isdigit() and _to_number(route_num) in US_ROUTES
+    return f"{'US' if is_us_route else 'VT'} ROUTE {route_num}"
+
+
+def _process_highway_tail(route_phrase: str, tail: str) -> tuple[str, Optional[str], Optional[str]]:
+    """Handle whatever text (if any) follows a leading Interstate/Route
+    phrase. Returns (street_name, suffix_directional, alias):
+
+    - Nothing left -> the route phrase alone.
+    - Just a bare directional (e.g. "W" in "Route 22A W") -> the route's own
+      suffix directional, same as before this existed.
+    - A single leading directional followed by nothing but a road type (e.g.
+      "N Ext" in "Route 7B N Ext") -> a route extension/modifier, not a
+      separate road -- expanded and folded directly into the route's name
+      (e.g. "ROUTE 7B N EXTENSION"), preserving the original word order
+      rather than the fixed number/name/type/suffix assembly order used
+      elsewhere, since "extension" grammatically follows its directional.
+    - A single leading directional followed by a real name-plus-road-type
+      (e.g. "W Tinmouth Rd" in "Route 133 W Tinmouth Rd") -> that's a
+      distinct local alias road name, not part of the route -- the leading
+      directional stays with the route as its own suffix directional, and
+      the rest is parsed and returned separately as `alias`.
+    - Anything else (e.g. "Central" in "Route 7B Central", with no road type
+      of its own) -- isn't confused for an alias or an extension; it's kept
+      as part of the route's own name, same as free text."""
+    tokens = [t for t in tail.strip().split(" ") if t]
+    if not tokens:
+        return route_phrase, None, None
+
+    if len(tokens) == 1 and tokens[0] in SUFFIX_DIRECTIONAL_ABBR:
+        return route_phrase, SUFFIX_DIRECTIONAL_ABBR[tokens[0]], None
+
+    mod_dir = None
+    remaining = tokens
+    if tokens[0] in SUFFIX_DIRECTIONAL_ABBR:
+        mod_dir = SUFFIX_DIRECTIONAL_ABBR[tokens[0]]
+        remaining = tokens[1:]
+
+    if len(remaining) == 1 and remaining[0] in ROAD_TYPE_MAP:
+        pieces = [route_phrase] + ([mod_dir] if mod_dir else []) + [ROAD_TYPE_MAP[remaining[0]]]
+        return " ".join(pieces), None, None
+
+    if len(remaining) >= 2 and remaining[-1] in ROAD_TYPE_MAP:
+        alias_name, alias_road_type, _ = parse_street_remainder(" ".join(remaining))
+        alias = " ".join(part for part in (alias_name, alias_road_type) if part)
+        return route_phrase, mod_dir, alias
+
+    pieces = [route_phrase] + ([mod_dir] if mod_dir else []) + remaining
+    return " ".join(pieces), None, None
+
+
+def _detect_reversed_highway_alias(text: str) -> Optional[tuple[str, Optional[str], Optional[str]]]:
+    """Detect a local alias road name given *before* an Interstate/Route
+    phrase that runs to the end of the text (e.g. "Weston Rd Route 155").
+    Only matches if the leading text actually looks like a real "name plus
+    road type" -- e.g. "Business" in "Business Route 4" or "Old" in "Old
+    Route 110" don't qualify (no road type of their own), so those are left
+    alone entirely rather than misread as an alias. Returns
+    (street_name, suffix_directional, alias), or None if there's no
+    qualifying alias here."""
+    for regex, is_interstate in ((TRAILING_ROUTE_RE, False), (TRAILING_INTERSTATE_RE, True)):
+        match = regex.search(text)
+        if not match:
+            continue
+        lead = text[:match.start()].strip()
+        lead_tokens = [t for t in lead.split(" ") if t]
+        if len(lead_tokens) < 2 or lead_tokens[-1] not in ROAD_TYPE_MAP:
+            continue
+        route_phrase = _route_phrase_for(match.group(1), is_interstate)
+        suffix_directional = SUFFIX_DIRECTIONAL_ABBR.get(match.group(2)) if match.group(2) else None
+        alias_name, alias_road_type, _ = parse_street_remainder(lead)
+        alias = " ".join(part for part in (alias_name, alias_road_type) if part)
+        return route_phrase, suffix_directional, alias
+    return None
+
+
+def parse_highway(text: str) -> Optional[tuple[str, Optional[str], Optional[str]]]:
+    """Detect an Interstate/Route anywhere in `text` -- leading it as usual,
+    or with a local alias road name attached before or after it -- and
+    return (street_name, suffix_directional, alias). Returns None if `text`
+    isn't a highway at all, in which case the caller should fall through to
+    ordinary street-name parsing."""
+    route_phrase, tail = standardize_highways(text)
+    if route_phrase:
+        return _process_highway_tail(route_phrase, tail)
+    return _detect_reversed_highway_alias(text)
+
+
 # ---------------------------------------------------------------------------
 # Directional parsing
 # ---------------------------------------------------------------------------
@@ -370,13 +475,6 @@ def parse_suffix_directional(
     if only_abbreviated and last not in ("N", "S", "E", "W") and candidate != known_suffix_directional:
         return None, tokens
     return candidate, tokens[:-1]
-
-
-def extract_trailing_directional(remainder: str) -> Optional[str]:
-    """Extract a suffix directional from whatever text is left after an
-    Interstate/Route phrase has been consumed (e.g. "E" in "I-89 E")."""
-    remainder = remainder.strip()
-    return SUFFIX_DIRECTIONAL_ABBR.get(remainder)
 
 
 def parse_street_remainder(
@@ -477,17 +575,17 @@ def standardize_address(raw_address: str) -> Dict[str, Any]:
     street_name: Optional[str] = None
     road_type: Optional[str] = None
     suffix_directional: Optional[str] = None
+    alias: Optional[str] = None
 
     po_box = parse_po_box(primary_text)
-    interstate_or_route, route_remainder = standardize_highways(primary_text)
+    highway_result = parse_highway(primary_text)
 
     if po_box:
         address_number = po_box["address_number"]
         street_name = po_box["street_name"]
 
-    elif interstate_or_route:
-        street_name = interstate_or_route
-        suffix_directional = extract_trailing_directional(route_remainder)
+    elif highway_result:
+        street_name, suffix_directional, alias = highway_result
 
     else:
         address_number, remainder = extract_address_number(primary_text)
@@ -496,10 +594,9 @@ def standardize_address(raw_address: str) -> Dict[str, Any]:
         if address_number:
             prefix_directional, remainder = parse_prefix_directional(remainder, only_if_more_follows=True)
 
-        route_phrase, route_rest = standardize_highways(remainder)
-        if route_phrase:
-            street_name = route_phrase
-            suffix_directional = extract_trailing_directional(route_rest)
+        highway_result = parse_highway(remainder)
+        if highway_result:
+            street_name, suffix_directional, alias = highway_result
         else:
             street_name, road_type, suffix_directional = parse_street_remainder(remainder)
 
@@ -530,6 +627,7 @@ def standardize_address(raw_address: str) -> Dict[str, Any]:
             "road_type": road_type,
             "suffix_directional": suffix_directional,
             "secondary_address": secondary_address,
+            "alias": alias,
         },
     }
     return result
@@ -631,7 +729,7 @@ def parse_primary_remainder(
     text: str,
     known_road_type: Optional[str] = None,
     known_suffix_directional: Optional[str] = None,
-) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Parse a blended `PrimaryName`-style string -- the part of a primary
     address that comes after the address number, which may itself still
     carry a leading prefix directional (e.g. "E Main St") and/or a
@@ -664,19 +762,28 @@ def parse_primary_remainder(
     dedicated suffix-directional field to fall back on); free-text parsing
     via `standardize_address()` keeps stripping any recognized trailing
     directional word, per its own pinned test case ("1st st south, apt #4").
-    Returns (prefix_directional, street_name, road_type, suffix_directional).
+
+    A highway (Interstate/Route) is detected via `parse_highway()`, which
+    also picks up a local alias road name attached before or after it (e.g.
+    "Weston Rd" in "Weston Rd Route 155") -- see its docstring for the exact
+    rules distinguishing a genuine alias from ordinary extra words (like
+    "Business" in "Business Route 4") that aren't one.
+
+    Returns (prefix_directional, street_name, road_type, suffix_directional,
+    alias).
     """
     text = clean_whitespace((text or "").upper().replace(".", ""))
     prefix_directional, remainder = parse_prefix_directional(text, only_if_more_follows=True)
 
-    route_phrase, route_rest = standardize_highways(remainder)
-    if route_phrase:
-        return prefix_directional, route_phrase, None, extract_trailing_directional(route_rest)
+    highway_result = parse_highway(remainder)
+    if highway_result:
+        street_name, suffix_directional, alias = highway_result
+        return prefix_directional, street_name, None, suffix_directional, alias
 
     street_name, road_type, suffix_directional = parse_street_remainder(
         remainder, known_road_type, known_suffix_directional, only_abbreviated_suffix=True
     )
-    return prefix_directional, street_name, road_type, suffix_directional
+    return prefix_directional, street_name, road_type, suffix_directional, None
 
 
 # ---------------------------------------------------------------------------
@@ -784,6 +891,18 @@ def parse_primary_remainder(
 # views, they're only produced when `FullAddress` / `PrimaryAddress` was
 # itself supplied.
 #
+# A highway address (Interstate/Route) sometimes also carries a local alias
+# road name -- e.g. "Tinmouth Rd" in "VT Route 133 W Tinmouth Rd", or
+# "Weston Rd" in "Weston Rd Route 155" (the alias may come before or after
+# the highway). When one is detected, it's split out into its own always-on
+# `Clean_Alias` output (no dedicated input parameter of its own to
+# configure), leaving the highway phrase alone in `Clean_PrimaryName` /
+# `Clean_StreetName` / etc. Not every trailing/leading word next to a
+# highway number is an alias, though -- "Central" in "VT Route 7B Central",
+# "Business" in "Business Route 4", and "Old" in "Old Route 110" are just
+# part of the highway's own name (no road type of their own), so they're
+# left alone rather than split out; `Clean_Alias` is None in those cases.
+#
 # This module only standardizes address *numbers* and *street names* -- it
 # never inspects or cleans city, state, or zip/zip+4 values, beyond
 # recognizing and discarding a trailing city/state/zip tail on
@@ -822,7 +941,7 @@ def _build_primary_from_parts(
     street_pre_directional: str,
     street_post_directional: str,
     street_post_type: str,
-) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
+) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Build the five primary-address segments from whichever granular
     fields are available. `PrimaryName`, if given, is always parsed the same
     way a combined string would be -- picking up its own prefix directional,
@@ -840,8 +959,11 @@ def _build_primary_from_parts(
     directly via `normalize_street_name()` with no further stripping, and
     takes precedence over whatever `PrimaryName` would otherwise auto-detect,
     since it's a more authoritative signal than text that still has to be
-    parsed. Returns (address_number, prefix_directional, street_name,
-    road_type, suffix_directional); any that have no corresponding input are
+    parsed. If `primary_name` (or a highway phrase within it) carries a
+    local alias road name -- see `parse_highway()` -- it's returned
+    separately as `alias`, alongside the regular segments. Returns
+    (address_number, prefix_directional, street_name, road_type,
+    suffix_directional, alias); any that have no corresponding input are
     None."""
     base_number = normalize_address_number_token(address_number) if address_number else combine_number_range(
         address_number_low, address_number_high
@@ -851,9 +973,9 @@ def _build_primary_from_parts(
     explicit_road_type = normalize_road_type(street_post_type)
     explicit_suffix_dir = normalize_suffix_directional(street_post_directional)
 
-    auto_prefix_dir, auto_name, auto_road_type, auto_suffix_dir = None, None, None, None
+    auto_prefix_dir, auto_name, auto_road_type, auto_suffix_dir, alias = None, None, None, None, None
     if primary_name:
-        auto_prefix_dir, auto_name, auto_road_type, auto_suffix_dir = parse_primary_remainder(
+        auto_prefix_dir, auto_name, auto_road_type, auto_suffix_dir, alias = parse_primary_remainder(
             primary_name, known_road_type=explicit_road_type, known_suffix_directional=explicit_suffix_dir
         )
 
@@ -861,7 +983,7 @@ def _build_primary_from_parts(
     prefix_dir = normalize_prefix_directional(street_pre_directional) or auto_prefix_dir
     road_type = explicit_road_type or auto_road_type
     suffix_dir = explicit_suffix_dir or auto_suffix_dir
-    return number, prefix_dir, name, road_type, suffix_dir
+    return number, prefix_dir, name, road_type, suffix_dir, alias
 
 
 def standardize_feature_attributes(
@@ -918,6 +1040,14 @@ def standardize_feature_attributes(
     `PrimaryAddress` was itself supplied, rather than being invented a name
     for when it wasn't.
 
+    A highway address (Interstate/Route) sometimes also carries a local
+    alias road name, e.g. "Tinmouth Rd" in "VT Route 133 W Tinmouth Rd", or
+    "Weston Rd" in "Weston Rd Route 155". When one is detected -- see
+    `parse_highway()` for exactly what does and doesn't qualify as a genuine
+    alias -- it's split out into its own always-on `Clean_Alias` output
+    (no dedicated input parameter of its own), leaving the highway phrase
+    alone in `Clean_PrimaryName` / `Clean_StreetName` / etc.
+
     Every output attribute name is marked with a `Clean_` prefix by default;
     if `OutputAttributePrefix` is set, it replaces that default marker
     entirely (it never stacks on top of it), ready to be merged back onto
@@ -938,14 +1068,14 @@ def standardize_feature_attributes(
         combined = _get(FullAddress) or _get(PrimaryAddress)
         blended_text = strip_city_state_zip(clean_whitespace(combined.upper().replace(".", "")))
         segments = standardize_address(blended_text)["parsed_segments"]
-        number, prefix_dir, name, road_type, suffix_dir = (
+        number, prefix_dir, name, road_type, suffix_dir, alias = (
             segments["address_number"], segments["prefix_directional"], segments["street_name"],
-            segments["road_type"], segments["suffix_directional"],
+            segments["road_type"], segments["suffix_directional"], segments["alias"],
         )
         if secondary_address is None:
             secondary_address = segments["secondary_address"]
     else:
-        number, prefix_dir, name, road_type, suffix_dir = _build_primary_from_parts(
+        number, prefix_dir, name, road_type, suffix_dir, alias = _build_primary_from_parts(
             _get(PrimaryName), _get(StreetName),
             _get(AddressNumber), _get(AddressNumber_LowRange), _get(AddressNumber_HighRange),
             _get(AddressNumber_Prefix), _get(AddressNumber_Suffix),
@@ -975,6 +1105,7 @@ def standardize_feature_attributes(
     emit(Street_PostDirectional, "Street_PostDirectional", suffix_dir)
     emit(Street_PostType, "Street_PostType", road_type)
     emit(AddressSecondaryAddress, "AddressSecondaryAddress", secondary_address)
+    emit("", "Alias", alias)
 
     return flat
 
@@ -1109,6 +1240,20 @@ if __name__ == "__main__":
          "48 16 OUTERBAY WAY"),
         ("64 A Frame Dr",
          "64A FRAME DRIVE"),
+        ("VT Route 133 W Tinmouth Rd",
+         "VT ROUTE 133 W"),
+        ("VT Route 133 Morgan Rd",
+         "VT ROUTE 133"),
+        ("Weston Rd Route 155",
+         "VT ROUTE 155"),
+        ("VT Route 7B Central",
+         "VT ROUTE 7B CENTRAL"),
+        ("Business Route 4",
+         "BUSINESS ROUTE 4"),
+        ("Old Route 110",
+         "OLD ROUTE 110"),
+        ("VT Route 7B N Ext",
+         "VT ROUTE 7B N EXTENSION"),
     ]
 
     for raw, expected_full in cases:
@@ -1122,6 +1267,38 @@ if __name__ == "__main__":
     # Graceful handling of a missing secondary unit.
     result = standardize_address("123 Main Street")
     assert result["parsed_segments"]["secondary_address"] is None
+
+    # A highway address sometimes also carries a local alias road name --
+    # split out into its own "alias" segment, separate from the highway
+    # phrase itself, rather than either being dropped or left glued onto it.
+    result = standardize_address("VT Route 133 W Tinmouth Rd")
+    assert result["parsed_segments"]["street_name"] == "VT ROUTE 133"
+    assert result["parsed_segments"]["suffix_directional"] == "W"
+    assert result["parsed_segments"]["alias"] == "TINMOUTH ROAD"
+
+    result = standardize_address("VT Route 133 Morgan Rd")
+    assert result["parsed_segments"]["alias"] == "MORGAN ROAD"
+
+    # The alias can come before the highway instead of after it.
+    result = standardize_address("Weston Rd Route 155")
+    assert result["parsed_segments"]["street_name"] == "VT ROUTE 155"
+    assert result["parsed_segments"]["alias"] == "WESTON ROAD"
+
+    # Extra words next to a highway number aren't always an alias -- only a
+    # genuine "name plus its own road type" qualifies. A bare descriptive
+    # word with no road type of its own (e.g. "Central") is just part of the
+    # highway's own name, not a separate alias, and isn't dropped either.
+    for raw in ("VT Route 7B Central", "Business Route 4", "Old Route 110"):
+        result = standardize_address(raw)
+        assert result["parsed_segments"]["alias"] is None, raw
+
+    # "Ext" is fully spelled out as "Extension" for a route the same as any
+    # other road type, and isn't mistaken for an alias either (a bare road
+    # type with no name of its own is a route modifier, not a separate
+    # road).
+    result = standardize_address("VT Route 7B N Ext")
+    assert result["parsed_segments"]["street_name"] == "VT ROUTE 7B N EXTENSION"
+    assert result["parsed_segments"]["alias"] is None
 
     # A true full mailing address carries a city/state/zip tail that this
     # module doesn't touch -- it should be recognized and dropped.
@@ -1458,6 +1635,26 @@ if __name__ == "__main__":
     assert out["Clean_BARE"] == "MAIN"
     assert out["Clean_FULL"] == "EAST MAIN STREET"
 
+    # A highway alias splits into its own always-on Clean_Alias output,
+    # separate from Clean_PrimaryName -- whether the alias comes after the
+    # highway or before it -- with no dedicated input parameter of its own.
+    out = standardize_feature_attributes(
+        {"NAME": "VT Route 133 W Tinmouth Rd"}, PrimaryName="NAME"
+    )
+    assert out["Clean_NAME"] == "VT ROUTE 133 W"
+    assert out["Clean_Alias"] == "TINMOUTH ROAD"
+
+    out = standardize_feature_attributes({"NAME": "Weston Rd Route 155"}, PrimaryName="NAME")
+    assert out["Clean_NAME"] == "VT ROUTE 155"
+    assert out["Clean_Alias"] == "WESTON ROAD"
+
+    # Extra words next to a highway number that don't form a genuine
+    # "name plus road type" aren't mistaken for an alias.
+    for raw in ("VT Route 7B Central", "Business Route 4", "Old Route 110"):
+        out = standardize_feature_attributes({"NAME": raw}, PrimaryName="NAME")
+        assert out["Clean_NAME"] == raw.upper(), raw
+        assert out["Clean_Alias"] is None, raw
+
     # No address-role attributes configured at all -> graceful empty
     # result, never an error (no combination is a strict requirement).
     # Clean_FullAddress / Clean_PrimaryAddress are never fabricated, but
@@ -1468,5 +1665,6 @@ if __name__ == "__main__":
     assert out["Clean_PrimaryName"] is None
     assert out["Clean_AddressNumber"] is None
     assert out["Clean_AddressSecondaryAddress"] is None
+    assert out["Clean_Alias"] is None
 
     print("\nAll assertions passed.")

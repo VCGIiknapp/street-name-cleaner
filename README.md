@@ -17,6 +17,8 @@ result following Vermont-specific business rules for:
 - Prefix/suffix directional handling (`N` -> `NORTH`, suffix directionals
   stay abbreviated, e.g. `ROUTE 30 E`)
 - Interstate, US Route, and VT Route classification/formatting
+- Highway alias road names (e.g. `VT Route 133 W Tinmouth Rd`) split into a
+  separate `alias` output, distinct from the highway name itself
 
 Its reference tables (street-type abbreviations, directionals, route
 classifications) were derived from a one-time offline survey of Vermont's
@@ -81,6 +83,7 @@ print(result["full_address"])   # "123 NORTH MAIN STREET"
         "road_type": "...",
         "suffix_directional": "...",
         "secondary_address": "...",
+        "alias": "...",
     },
 }
 ```
@@ -119,6 +122,13 @@ sync with what the code actually does.
 | `5 E St` | `5 E STREET` | Same idea, but the single-letter street name also happens to be a cardinal direction ("E") -- it's kept as the street name, not spelled out as a prefix directional ("EAST") |
 | `48 16 Outerbay Way` | `48 16 OUTERBAY WAY` | A two-part whole-number address number (rural/lot-style addressing) stays together as the address number, not split with "16" leaking into the street name |
 | `64 A Frame Dr` | `64A FRAME DRIVE` | The consistency-over-correctness rule in action: this same text could mean address number `64A` (space instead of hyphen) or address number `64` with a street name that starts with the indefinite article "A" -- the rule always picks the former when a real street name follows |
+| `VT Route 133 W Tinmouth Rd` | `VT ROUTE 133 W` | A local alias road name after the highway is split into its own `alias` output (`TINMOUTH ROAD`), not glued onto or dropped from the highway name |
+| `VT Route 133 Morgan Rd` | `VT ROUTE 133` | Same alias-splitting, with no suffix directional in between (`alias` = `MORGAN ROAD`) |
+| `Weston Rd Route 155` | `VT ROUTE 155` | The alias can come *before* the highway instead of after it (`alias` = `WESTON ROAD`) |
+| `VT Route 7B Central` | `VT ROUTE 7B CENTRAL` | Not every word next to a highway number is an alias -- "Central" has no road type of its own, so it stays part of the highway's own name (`alias` is `None`) |
+| `Business Route 4` | `BUSINESS ROUTE 4` | Same idea: "Business" isn't a local road name either, so nothing is split out (`alias` is `None`) |
+| `Old Route 110` | `OLD ROUTE 110` | And neither is "Old" (`alias` is `None`) |
+| `VT Route 7B N Ext` | `VT ROUTE 7B N EXTENSION` | `Ext` is fully spelled out as `Extension` for a highway the same as any other road type; a bare road type with no name of its own is a route modifier, not an alias (`alias` is `None`) |
 
 ## Testing
 
@@ -326,6 +336,16 @@ uses your configured name (`Clean_` prepended) instead of the canonical
 fallback name -- this includes `StreetName` (e.g. `StreetName="ST_NAME"`
 produces `Clean_ST_NAME` instead of `Clean_StreetName`).
 
+**`Clean_Alias` is also always produced, always under its canonical name --
+there's no input parameter for it to mirror.** A highway address sometimes
+carries a local alias road name in addition to the highway itself (e.g.
+"Tinmouth Rd" in `VT Route 133 W Tinmouth Rd`, or "Weston Rd" in `Weston Rd
+Route 155` -- the alias can come before or after the highway). When one is
+detected, it's split out into `Clean_Alias`, leaving the highway phrase by
+itself in `Clean_PrimaryName` / `Clean_StreetName` / etc.; otherwise
+`Clean_Alias` is `None`. See "Highway aliases" below for exactly what does
+and doesn't qualify as one.
+
 ### Worked examples
 
 The three examples below are used consistently throughout this section --
@@ -415,6 +435,28 @@ and kept:
 | `Main St S` | *(none)* | `Clean_StreetName` = `MAIN`, `Clean_Street_PostDirectional` = `S` (unambiguous abbreviation) |
 | `Main St South` | `South` | `Clean_StreetName` = `MAIN`, `Clean_Street_PostDirectional` = `S` (redundant `South` dropped) |
 
+**Highway aliases.** A highway (Interstate/Route) address sometimes also
+carries a local alias road name, either after the highway or before it. When
+one is found, it's split into its own `Clean_Alias` output, leaving the
+highway phrase by itself everywhere else -- but only when the extra text
+next to the highway number genuinely looks like a distinct "name plus its
+own road type." A single leading directional between the highway number and
+the alias (e.g. the `W` below) stays with the highway, not the alias. Plain
+extra words with no road type of their own (e.g. "Central", "Business",
+"Old") are just part of the highway's own name and are never split out or
+dropped, and `Ext` is fully spelled out as `Extension` the same as any other
+road type, rather than being mistaken for an alias itself:
+
+| `PrimaryName` | `Clean_PrimaryName` | `Clean_Alias` |
+| --- | --- | --- |
+| `VT Route 133 W Tinmouth Rd` | `VT ROUTE 133 W` | `TINMOUTH ROAD` |
+| `VT Route 133 Morgan Rd` | `VT ROUTE 133` | `MORGAN ROAD` |
+| `Weston Rd Route 155` (alias comes first) | `VT ROUTE 155` | `WESTON ROAD` |
+| `VT Route 7B Central` | `VT ROUTE 7B CENTRAL` | *(none)* |
+| `Business Route 4` | `BUSINESS ROUTE 4` | *(none)* |
+| `Old Route 110` | `OLD ROUTE 110` | *(none)* |
+| `VT Route 7B N Ext` | `VT ROUTE 7B N EXTENSION` | *(none)* |
+
 **Secondary/unit address, independent of the above.** Follows the same
 combined-vs-split pattern; none of the three worked examples has a
 secondary unit, so see the "Other examples" table below instead.
@@ -439,7 +481,8 @@ A feature type with none of these configured simply yields an empty result
 `Clean_StreetName`, `Clean_AddressNumber`, `Clean_Street_PreDirectional`,
 `Clean_Street_PostDirectional`, `Clean_Street_PostType`, and
 `Clean_AddressSecondaryAddress` are always produced, named after whatever
-you configured for that role (or their own canonical name if you didn't).
+you configured for that role (or their own canonical name if you didn't);
+`Clean_Alias` is always produced too, always under its own canonical name.
 
 ### Other examples
 
