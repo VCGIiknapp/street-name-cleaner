@@ -29,22 +29,32 @@ dependencies.
 
 Source address data disagrees with itself about where the street name ends
 and the address number begins, especially around a single letter that
-follows the number. This module cannot always know, from the text alone,
-which reading the original data source intended -- so instead of chasing
-"correctness" against ground truth it doesn't have access to, it applies one
-fixed, documented rule consistently across every dataset it touches. That's
-the actual goal: two different datasets that spell the same real-world
-address differently should clean down to the *same* standardized value, so
-they can be joined/matched on address, even if the rule's guess about intent
-is occasionally wrong for any single record.
+follows the number. Given only the text `64 A Frame Dr`, this module cannot
+tell the difference between two genuinely different underlying addresses
+that happen to produce identical text:
+
+- an alphanumeric address number that's normally written `64-A` or `64A`,
+  but happens to have a space instead of a hyphen in this particular record
+  (address number `64A`, street name `FRAME DRIVE`), vs.
+- a street name that itself begins with the indefinite article "A" (address
+  number `64`, street name `A FRAME DRIVE`).
+
+There is no way to recover which one the original data actually meant from
+the string alone -- so instead of guessing at "correctness" against ground
+truth it doesn't have access to, this module applies one fixed, documented
+rule consistently across every dataset it touches. That's the actual goal:
+two different datasets that spell the same real-world address differently
+should clean down to the *same* standardized value, so they can be
+joined/matched on address, even if the rule's guess about intent is
+occasionally wrong for any single record.
 
 The rule: when a single letter immediately follows the address number,
 
 - if a separate word still follows that letter (a real street name), the
   letter is folded into the address number as an alphanumeric suffix (e.g.
   `64 A Frame Dr` -> address number `64A`, street name `FRAME DRIVE`) --
-  even for a source record that instead intended the standalone street name
-  to be `A FRAME DR`;
+  even for a source record that genuinely intended the street name to begin
+  with the indefinite article "A" (i.e. `A FRAME DR`);
 - if nothing (or only a road type / suffix directional) follows that letter,
   the letter is instead treated as a stand-alone single-letter street name
   (e.g. `26 G St` -> address number `26`, street name `G STREET`).
@@ -108,7 +118,7 @@ sync with what the code actually does.
 | `26 G ST` | `26 G STREET` | A single letter after the number isn't always an alphanumeric suffix (like `28-A` -> `28A`) -- here "G" is a stand-alone single-letter street name, so it's left as the street name rather than merged into the address number |
 | `5 E St` | `5 E STREET` | Same idea, but the single-letter street name also happens to be a cardinal direction ("E") -- it's kept as the street name, not spelled out as a prefix directional ("EAST") |
 | `48 16 Outerbay Way` | `48 16 OUTERBAY WAY` | A two-part whole-number address number (rural/lot-style addressing) stays together as the address number, not split with "16" leaking into the street name |
-| `64 A Frame Dr` | `64A FRAME DRIVE` | The consistency-over-correctness rule in action: a single letter with a real street name after it ("Frame Dr") folds into the address number, even though some source systems store this exact address with "A Frame Dr" as the standalone street name |
+| `64 A Frame Dr` | `64A FRAME DRIVE` | The consistency-over-correctness rule in action: this same text could mean address number `64A` (space instead of hyphen) or address number `64` with a street name that starts with the indefinite article "A" -- the rule always picks the former when a real street name follows |
 
 ## Testing
 
