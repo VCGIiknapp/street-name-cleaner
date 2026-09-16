@@ -1059,6 +1059,8 @@ if __name__ == "__main__":
          "5 E STREET"),
         ("48 16 Outerbay Way",
          "48 16 OUTERBAY WAY"),
+        ("64 A Frame Dr",
+         "64A FRAME DRIVE"),
     ]
 
     for raw, expected_full in cases:
