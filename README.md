@@ -142,6 +142,25 @@ address-role parameter below is optional and independent -- supply
 whichever ones exist on a given feature type and leave the rest blank;
 **there is no required combination.**
 
+**Prefer granular input columns over `FullAddress`/`PrimaryAddress` when
+they're available.** If your feature type already has the address number
+broken out into its own column, map it to `AddressNumber` and map the rest
+of the street to `PrimaryName` (or, better still, to its own individual
+`Street_PreDirectional` / `Street_PostType` / `Street_PostDirectional`
+columns) instead of concatenating everything into `FullAddress` or
+`PrimaryAddress`. A combined string forces this module to *guess* where the
+address number ends and the street name begins, and that guess is
+undecidable in some cases -- see [the caveat above](#a-note-on-consistency-not-correctness).
+For example, `PrimaryAddress="64 A Frame Dr"` is genuinely ambiguous: it
+could be address number `64A` (a hyphen written as a space) with street name
+`Frame Dr`, or address number `64` with a street name that starts with the
+indefinite article "A" (`A Frame Dr`). This module always resolves that one
+way (folding the letter into the number), which is right for *most* records
+but not guaranteed to be right for *this* one. Supplying
+`AddressNumber="64"` and `PrimaryName="A Frame Dr"` separately sidesteps the
+guess entirely, since the address-number/street-name boundary is then
+already known rather than inferred from text.
+
 ### Setting it up in a PythonCaller
 
 A **PythonCaller** transformer's "Class to Process Features" parameter has
