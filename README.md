@@ -157,9 +157,10 @@ could be address number `64A` (a hyphen written as a space) with street name
 indefinite article "A" (`A Frame Dr`). This module always resolves that one
 way (folding the letter into the number), which is right for *most* records
 but not guaranteed to be right for *this* one. Supplying
-`AddressNumber="64"` and `PrimaryName="A Frame Dr"` separately sidesteps the
-guess entirely, since the address-number/street-name boundary is then
-already known rather than inferred from text.
+`AddressNumber="64"` and `PrimaryName="A Frame Dr"` (or, if the name is
+already split from any directional/type of its own, `StreetName="A Frame
+Dr"`) separately sidesteps the guess entirely, since the address-number/
+street-name boundary is then already known rather than inferred from text.
 
 ### Setting it up in a PythonCaller
 
@@ -209,7 +210,8 @@ class AddressCleaner(object):
         self.cleaner = DownloadedCleaner(
             FullAddress="",                      # Example: "SITE_ADDRESS"
             PrimaryAddress="",
-            PrimaryName="",                      # Example: "STREET_NAME"
+            PrimaryName="",                      # Example: "STREET_NAME" (bare name, or bare name + directional/type)
+            StreetName="",                       # Example: "ST_NAME" (bare name ONLY -- use instead of PrimaryName if your name column never has a directional/type mixed in)
             AddressNumber="",                    # Example: "HOUSE_NUM"
             AddressNumber_LowRange="",
             AddressNumber_HighRange="",
@@ -283,9 +285,8 @@ useful value for a plain Python caller to check against.)
 For any of these always-on outputs, if you *did* directly configure that
 specific role (e.g. you have your own `AddressNumber` column), its output
 uses your configured name (`Clean_` prepended) instead of the canonical
-fallback name. `Clean_StreetName` is the one exception that's always the
-canonical name, since there's no dedicated input parameter for "just the
-bare name" to mirror.
+fallback name -- this includes `StreetName` (e.g. `StreetName="ST_NAME"`
+produces `Clean_ST_NAME` instead of `Clean_StreetName`).
 
 ### Worked examples
 
@@ -328,6 +329,7 @@ the address is assembled from these instead:
 | Parameter | Meaning | Example 1 | Example 2 | Example 3 |
 | --- | --- | --- | --- | --- |
 | `PrimaryName` | The street portion after the address number. Always parsed the same way a combined string would be -- picking up its own prefix directional, route phrase, road type, and suffix directional -- so it can hold just the bare name (example 3) or the whole remainder (example 2). | `VT Route 114 S` | `E Main St` | `Stonehedge Drive` |
+| `StreetName` | The bare street name *only*, for a source system that already keeps it split from any directional/type of its own (e.g. a `St_Name` column). No directional/road-type parsing is applied -- there's nothing to strip out of a field guaranteed to be name-only. Takes precedence over whatever `PrimaryName` would otherwise auto-detect for the name portion, if both are given. Not used in any of the three examples above (each uses `PrimaryName` instead). | -- | -- | -- |
 | `AddressNumber` | A single house number. | `2729` | `137` | `5` |
 | `AddressNumber_LowRange` | Low end of an address-number range, in its own column (e.g. a road-centerline segment); used when `AddressNumber` is blank. Not used in any of the three examples. | -- | -- | -- |
 | `AddressNumber_HighRange` | High end of that same range, in a second, separate column. Not used in any of the three examples. | -- | -- | -- |

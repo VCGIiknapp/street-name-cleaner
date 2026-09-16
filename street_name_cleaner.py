@@ -575,6 +575,22 @@ def normalize_road_type(value: str) -> Optional[str]:
     return ROAD_TYPE_MAP.get(token, token) or None
 
 
+def normalize_street_name(value: str) -> Optional[str]:
+    """Normalize a value already known to be the bare street name alone --
+    with no directional or road type of its own -- e.g. a dedicated
+    `St_Name`-style field that's already been split from the rest of the
+    address. Expands ordinals and disambiguates a leading "St" as "Saint",
+    but applies no directional/road-type stripping, since the caller has
+    already guaranteed there isn't one to strip out."""
+    text = clean_whitespace((value or "").upper().replace(".", ""))
+    if not text:
+        return None
+    tokens = [expand_ordinal_token(t) for t in text.split(" ") if t]
+    if tokens and tokens[0] == "ST":
+        tokens[0] = "SAINT"
+    return " ".join(tokens) if tokens else None
+
+
 def normalize_address_number_token(value: str) -> Optional[str]:
     """Apply the half-value / alphanumeric formatting rules (rule 3) to a
     single, already-isolated address-number value (no surrounding street
@@ -695,6 +711,9 @@ def parse_primary_remainder(
 #   built from these individual fields instead:
 #
 #   PrimaryName               | "VT Route 114 S"       | "E Main St"      | "Stonehedge Drive"
+#   StreetName                | (alternative to PrimaryName, when the bare
+#                             |  name is already split from its directional/
+#                             |  road type in its own dedicated column)
 #   AddressNumber             | "2729"                 | "137"            | "5"
 #   AddressNumber_LowRange    | (alternative to AddressNumber, when only a
 #   AddressNumber_HighRange   |  low/high range is available, e.g. a road-
@@ -716,6 +735,15 @@ def parse_primary_remainder(
 # given) is handled the same as fully split data. All three examples above
 # standardize to:
 #   "2729 VT ROUTE 114 S", "137 EAST MAIN STREET", "H5 STONEHEDGE DRIVE"
+#
+# `StreetName` is a separate, dedicated bare-name-only field -- distinct from
+# `PrimaryName`, which may hold either the bare name or the full remainder --
+# for a source system that already keeps the name split from its
+# directional/type (e.g. a `St_Name`-style column). It applies no
+# directional/road-type stripping of its own (there's nothing to strip out of
+# a field guaranteed to be name-only) and, when supplied, takes precedence
+# over whatever `PrimaryName` would otherwise auto-detect for the name
+# portion.
 #
 # The secondary/unit address roles follow the same combined-vs-split pattern:
 #
@@ -742,7 +770,7 @@ def parse_primary_remainder(
 # attribute name, the output includes a `Clean_<that name>` attribute (e.g.
 # `PrimaryName="STREET_NAME"` produces `Clean_STREET_NAME`), or
 # `OutputAttributePrefix<that name>` if `OutputAttributePrefix` is set.
-# `PrimaryName`,
+# `PrimaryName`, `StreetName`,
 # `AddressNumber`, `Street_PreDirectional`, `Street_PostDirectional`,
 # `Street_PostType`, and `AddressSecondaryAddress` are *always* produced
 # this way -- falling back to their own parameter name (e.g.
@@ -751,9 +779,7 @@ def parse_primary_remainder(
 # used: supply a combined `PrimaryName` and you still get
 # `Clean_AddressNumber` / `Clean_Street_PreDirectional` / etc. back; supply
 # only granular fields and you still get a `Clean_PrimaryName` built from
-# them. There's also always a `Clean_StreetName` -- the bare street name
-# alone, with no directional or road type -- since it has no dedicated
-# input parameter of its own to mirror. `Clean_FullAddress` /
+# them. `Clean_FullAddress` /
 # `Clean_PrimaryAddress` are the exception: since they're strictly combined
 # views, they're only produced when `FullAddress` / `PrimaryAddress` was
 # itself supplied.
@@ -787,6 +813,7 @@ def _build_secondary_from_parts(
 
 def _build_primary_from_parts(
     primary_name: str,
+    street_name: str,
     address_number: str,
     address_number_low: str,
     address_number_high: str,
@@ -805,9 +832,17 @@ def _build_primary_from_parts(
     `street_pre_directional` / `street_post_directional` / `street_post_type`
     are explicitly supplied, they take precedence over whatever was
     auto-detected from `PrimaryName`, so partially redundant data is handled
-    the same as fully split data. Returns
-    (address_number, prefix_directional, street_name, road_type,
-    suffix_directional); any that have no corresponding input are None."""
+    the same as fully split data.
+
+    `street_name`, if given, is a dedicated bare-name-only field (e.g. a
+    `St_Name`-style column that's already guaranteed to hold nothing but the
+    name, with no directional or road type of its own) -- it's normalized
+    directly via `normalize_street_name()` with no further stripping, and
+    takes precedence over whatever `PrimaryName` would otherwise auto-detect,
+    since it's a more authoritative signal than text that still has to be
+    parsed. Returns (address_number, prefix_directional, street_name,
+    road_type, suffix_directional); any that have no corresponding input are
+    None."""
     base_number = normalize_address_number_token(address_number) if address_number else combine_number_range(
         address_number_low, address_number_high
     )
@@ -816,12 +851,13 @@ def _build_primary_from_parts(
     explicit_road_type = normalize_road_type(street_post_type)
     explicit_suffix_dir = normalize_suffix_directional(street_post_directional)
 
-    auto_prefix_dir, name, auto_road_type, auto_suffix_dir = None, None, None, None
+    auto_prefix_dir, auto_name, auto_road_type, auto_suffix_dir = None, None, None, None
     if primary_name:
-        auto_prefix_dir, name, auto_road_type, auto_suffix_dir = parse_primary_remainder(
+        auto_prefix_dir, auto_name, auto_road_type, auto_suffix_dir = parse_primary_remainder(
             primary_name, known_road_type=explicit_road_type, known_suffix_directional=explicit_suffix_dir
         )
 
+    name = normalize_street_name(street_name) or auto_name
     prefix_dir = normalize_prefix_directional(street_pre_directional) or auto_prefix_dir
     road_type = explicit_road_type or auto_road_type
     suffix_dir = explicit_suffix_dir or auto_suffix_dir
@@ -833,6 +869,7 @@ def standardize_feature_attributes(
     FullAddress: str = "",
     PrimaryAddress: str = "",
     PrimaryName: str = "",
+    StreetName: str = "",
     AddressNumber: str = "",
     AddressNumber_LowRange: str = "",
     AddressNumber_HighRange: str = "",
@@ -861,7 +898,7 @@ def standardize_feature_attributes(
     The output mirrors the input: for every role parameter that was given an
     attribute name, the output includes a `Clean_<that name>` attribute
     holding the cleaned value for that same role (e.g. `PrimaryName="STREET"`
-    produces `Clean_STREET`). `PrimaryName`, `AddressNumber`,
+    produces `Clean_STREET`). `PrimaryName`, `StreetName`, `AddressNumber`,
     `Street_PreDirectional`, `Street_PostDirectional`, `Street_PostType`, and
     `AddressSecondaryAddress` are *always* included in the output this way --
     using their own parameter name (e.g. `Clean_PrimaryName`) as a fallback
@@ -870,9 +907,12 @@ def standardize_feature_attributes(
     used: supply a combined `PrimaryName` and you still get
     `Clean_AddressNumber` / `Clean_Street_PreDirectional` / etc. back;
     supply only the granular fields and you still get a `Clean_PrimaryName`
-    built from them. There's also always a `Clean_StreetName` -- the bare
-    street name alone, with no directional or road type -- since it has no
-    dedicated input parameter of its own to mirror. `Clean_FullAddress` /
+    built from them. `StreetName` is a separate, dedicated bare-name-only
+    field -- distinct from `PrimaryName`, which may hold either the bare name
+    or the full remainder -- for a source system that already keeps the name
+    split from its directional/type (e.g. a `St_Name`-style column); when
+    supplied, it takes precedence over whatever `PrimaryName` would
+    otherwise auto-detect for the name portion. `Clean_FullAddress` /
     `Clean_PrimaryAddress` are the exception: since they're strictly
     combined views, they're only produced when `FullAddress` /
     `PrimaryAddress` was itself supplied, rather than being invented a name
@@ -906,7 +946,7 @@ def standardize_feature_attributes(
             secondary_address = segments["secondary_address"]
     else:
         number, prefix_dir, name, road_type, suffix_dir = _build_primary_from_parts(
-            _get(PrimaryName),
+            _get(PrimaryName), _get(StreetName),
             _get(AddressNumber), _get(AddressNumber_LowRange), _get(AddressNumber_HighRange),
             _get(AddressNumber_Prefix), _get(AddressNumber_Suffix),
             _get(Street_PreDirectional), _get(Street_PostDirectional), _get(Street_PostType),
@@ -929,11 +969,11 @@ def standardize_feature_attributes(
     if PrimaryAddress.strip():
         emit(PrimaryAddress, "PrimaryAddress", primary_address)
     emit(PrimaryName, "PrimaryName", name_only)
+    emit(StreetName, "StreetName", name)
     emit(AddressNumber, "AddressNumber", number)
     emit(Street_PreDirectional, "Street_PreDirectional", prefix_dir)
     emit(Street_PostDirectional, "Street_PostDirectional", suffix_dir)
     emit(Street_PostType, "Street_PostType", road_type)
-    emit("", "StreetName", name)
     emit(AddressSecondaryAddress, "AddressSecondaryAddress", secondary_address)
 
     return flat
@@ -951,6 +991,7 @@ class AddressCleaner:
         FullAddress: str = "",
         PrimaryAddress: str = "",
         PrimaryName: str = "",
+        StreetName: str = "",
         AddressNumber: str = "",
         AddressNumber_LowRange: str = "",
         AddressNumber_HighRange: str = "",
@@ -968,6 +1009,7 @@ class AddressCleaner:
         self.FullAddress = FullAddress
         self.PrimaryAddress = PrimaryAddress
         self.PrimaryName = PrimaryName
+        self.StreetName = StreetName
         self.AddressNumber = AddressNumber
         self.AddressNumber_LowRange = AddressNumber_LowRange
         self.AddressNumber_HighRange = AddressNumber_HighRange
@@ -989,6 +1031,7 @@ class AddressCleaner:
             self.FullAddress,
             self.PrimaryAddress,
             self.PrimaryName,
+            self.StreetName,
             self.AddressNumber,
             self.AddressNumber_LowRange,
             self.AddressNumber_HighRange,
@@ -1393,6 +1436,27 @@ if __name__ == "__main__":
         AddressSecondaryNumber_HighRange="UNIT_HIGH",
     )
     assert out["Clean_AddressSecondaryAddress"] == "UNIT 1-5"
+
+    # StreetName is a separate, dedicated bare-name-only field, distinct
+    # from PrimaryName -- for a source system that already keeps the name
+    # split from its directional/type in its own column.
+    out = standardize_feature_attributes(
+        {"NAME": "Main", "NUM": "137", "PRE": "E", "TYPE": "St"},
+        StreetName="NAME", AddressNumber="NUM",
+        Street_PreDirectional="PRE", Street_PostType="TYPE",
+    )
+    assert out["Clean_NAME"] == "MAIN"
+    assert out["Clean_PrimaryName"] == "EAST MAIN STREET"
+    assert out["Clean_NUM"] == "137"
+
+    # When both StreetName and PrimaryName are supplied, StreetName -- the
+    # more authoritative, already-split signal -- wins for the name portion.
+    out = standardize_feature_attributes(
+        {"BARE": "Main", "FULL": "E Main St"},
+        StreetName="BARE", PrimaryName="FULL",
+    )
+    assert out["Clean_BARE"] == "MAIN"
+    assert out["Clean_FULL"] == "EAST MAIN STREET"
 
     # No address-role attributes configured at all -> graceful empty
     # result, never an error (no combination is a strict requirement).
