@@ -269,6 +269,17 @@ strictly *combined* views, they only appear when you actually configured
 `FullAddress` / `PrimaryAddress` -- there's no name to invent for a
 combined view you never asked for.
 
+**Every one of these output attributes is always written to the feature,
+even when its value couldn't be determined.** FME's `setAttribute()` treats
+a Python `None` as "remove this attribute" rather than "set it to nothing,"
+so `AddressCleaner` always writes an empty string instead of `None` for any
+segment it couldn't resolve -- that way a segment being blank (because that
+piece just isn't present in this record) is never confused with the
+attribute silently disappearing from the feature. (Calling
+`standardize_feature_attributes()` directly, outside of `AddressCleaner`,
+still returns `None` for an unresolved segment, since that's the more
+useful value for a plain Python caller to check against.)
+
 For any of these always-on outputs, if you *did* directly configure that
 specific role (e.g. you have your own `AddressNumber` column), its output
 uses your configured name (`Clean_` prepended) instead of the canonical

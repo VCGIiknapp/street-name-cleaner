@@ -1003,8 +1003,13 @@ class AddressCleaner:
             self.AddressSecondaryNumber_HighRange,
             self.OutputAttributePrefix,
         )
+        # FME's setAttribute treats a bare None as "remove this attribute"
+        # rather than "set it to a blank value" -- so a segment that
+        # couldn't be determined for a given feature would otherwise vanish
+        # from the output entirely instead of showing up as an empty
+        # string, inconsistent with segments that did resolve to a value.
         for key, value in output.items():
-            feature.setAttribute(key, value)
+            feature.setAttribute(key, value if value is not None else "")
         self.pyoutput(feature)
 
     def close(self) -> None:
