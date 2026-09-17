@@ -418,6 +418,17 @@ the address is assembled from these instead:
 | `AddressNumber_LowRange` | Low end of an address-number range, in its own column (e.g. a road-centerline segment); used when `AddressNumber` is blank. Not used in any of the three examples. | -- | -- | -- |
 | `AddressNumber_HighRange` | High end of that same range, in a second, separate column. Not used in any of the three examples. | -- | -- | -- |
 | `AddressNumber_LowRange_Left` / `AddressNumber_HighRange_Left` / `AddressNumber_LowRange_Right` / `AddressNumber_HighRange_Right` | An alternative to the plain `AddressNumber_LowRange`/`AddressNumber_HighRange` pair, for a road-centerline dataset that instead splits the address range by side of the street (e.g. odd addresses on the left, even on the right, each with its own low/high). Whichever of these -- along with `AddressNumber`/`AddressNumber_LowRange`/`AddressNumber_HighRange` -- are actually populated are folded into one overall range spanning the lowest to the highest value given; this module tracks a single address number/range per feature, not a separate value per side. Not used in any of the three examples. | -- | -- | -- |
+
+Whichever of the six low/high range parameters above are actually
+configured *also* each get their own individual output, in addition to the
+combined `CLEAN_AddressNumber` -- e.g. `AddressNumber_LowRange="LOW"`
+produces a `CLEAN_LOW` holding just that column's own normalized value
+(half-value/alphanumeric formatting only, no merging with a prefix/suffix
+or combining with its other half). Unlike the always-on segments elsewhere
+on this page, these aren't produced at all unless directly configured --
+there's no canonical fallback name for "one side of a range" to invent.
+`AddressSecondaryNumber_LowRange`/`AddressSecondaryNumber_HighRange`
+(below) work the same way.
 | `AddressNumber_Prefix` | A letter (or rural camp/lot word like "LOT"/"CABIN") immediately before the number, merged tight per rule 3 (`H` + `5` -> `H5`). | *(none)* | *(none)* | `H` |
 | `AddressNumber_Suffix` | A letter suffix on the number, merged tight the same way (e.g. `A` -> `...28A`), or `1/2` for a half value (kept with a space: `33 1/2`). | *(none)* | *(none)* | *(none)* |
 | `Street_PreDirectional` | e.g. `"E"`. | *(none)* | `E` | *(none)* |
@@ -521,10 +532,10 @@ set" cell:
 | --- | --- | --- |
 | Full address with an embedded unit and a city/state/zip tail | `FullAddress="SITE_ADDRESS"` = `"133 S Burlington St, Apt 4, South Burlington, VT 05403"` | `CLEAN_SITE_ADDRESS` = `133 SOUTH BURLINGTON STREET, UNIT 4`; `CLEAN_AddressSecondaryAddress` = `UNIT 4` |
 | Primary + secondary as two combined columns, with an output prefix | `PrimaryAddress="MAIL_PRIMARY"` = `"88 South Hill Rd"`, `AddressSecondaryAddress="MAIL_UNIT"` = `"Ste 2"`, `OutputAttributePrefix="MAIL_STD_"` | `MAIL_STD_MAIL_PRIMARY` = `88 SOUTH HILL ROAD`; `MAIL_STD_MAIL_UNIT` = `UNIT 2`; `MAIL_STD_Street_PostType` = `ROAD` (canonical name, since `Street_PostType` wasn't configured; `MAIL_STD_` replaces the default `CLEAN_` marker on every attribute, rather than stacking on top of it) |
-| Address-number range (road-centerline segment), building blocks only | `AddressNumber_LowRange="1"`, `AddressNumber_HighRange="5"`, `PrimaryName="NAME"` = `"Main St"` | `CLEAN_AddressNumber` = `1-5` (canonical, since `AddressNumber` itself wasn't configured); `CLEAN_NAME` = `MAIN STREET` |
-| Address-number range split by side of the street across four columns | `AddressNumber_LowRange_Left="1"`, `AddressNumber_HighRange_Left="99"`, `AddressNumber_LowRange_Right="2"`, `AddressNumber_HighRange_Right="98"` | `CLEAN_AddressNumber` = `1-99` (the overall lowest-to-highest span across all four values, not a separate value per side) |
+| Address-number range (road-centerline segment), building blocks only | `AddressNumber_LowRange="LOW"` = `"1"`, `AddressNumber_HighRange="HIGH"` = `"5"`, `PrimaryName="NAME"` = `"Main St"` | `CLEAN_AddressNumber` = `1-5` (canonical, since `AddressNumber` itself wasn't configured); `CLEAN_LOW` = `1`, `CLEAN_HIGH` = `5`; `CLEAN_NAME` = `MAIN STREET` |
+| Address-number range split by side of the street across four columns | `AddressNumber_LowRange_Left="LL"` = `"1"`, `AddressNumber_HighRange_Left="LH"` = `"99"`, `AddressNumber_LowRange_Right="RL"` = `"2"`, `AddressNumber_HighRange_Right="RH"` = `"98"` | `CLEAN_AddressNumber` = `1-99` (the overall lowest-to-highest span across all four values, not a separate value per side); `CLEAN_LL` = `1`, `CLEAN_LH` = `99`, `CLEAN_RL` = `2`, `CLEAN_RH` = `98` (each range column also gets its own individual output, since each was directly configured) |
 | Half-value number from a split `AddressNumber` + `AddressNumber_Suffix` | `AddressNumber="NUM"` = `"33"`, `AddressNumber_Suffix="SUF"` = `"1/2"`, `PrimaryName="NAME"` = `"Main St"` | `CLEAN_NUM` = `33 1/2`; `CLEAN_NAME` = `MAIN STREET` |
-| Secondary unit from a split abbreviation + range | `AddressSecondaryAbbreviation="Apt"`, `AddressSecondaryNumber_LowRange="1"`, `AddressSecondaryNumber_HighRange="5"` | `CLEAN_AddressSecondaryAddress` = `UNIT 1-5` (canonical, since `AddressSecondaryAddress` itself wasn't configured) |
+| Secondary unit from a split abbreviation + range | `AddressSecondaryAbbreviation="UNIT_TYPE"` = `"Apt"`, `AddressSecondaryNumber_LowRange="UNIT_LOW"` = `"1"`, `AddressSecondaryNumber_HighRange="UNIT_HIGH"` = `"5"` | `CLEAN_AddressSecondaryAddress` = `UNIT 1-5` (canonical, since `AddressSecondaryAddress` itself wasn't configured); `CLEAN_UNIT_LOW` = `1`, `CLEAN_UNIT_HIGH` = `5` |
 | No address-role parameters set at all | *(nothing)* | `CLEAN_PrimaryName`, `CLEAN_StreetName`, `CLEAN_AddressNumber`, etc. are all present holding `None`; `CLEAN_FullAddress` / `CLEAN_PrimaryAddress` don't appear at all -- never an error |
 
 This module only standardizes address *numbers* and *street names*; it

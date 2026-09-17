@@ -1088,7 +1088,16 @@ def standardize_feature_attributes(
     of these five address-number inputs are actually populated are folded
     into one overall range spanning their lowest to highest value, since
     this module only tracks a single address number/range per feature, not
-    a separate value per side.
+    a separate value per side. Whichever of these six low/high range
+    parameters (plus `AddressSecondaryNumber_LowRange` /
+    `AddressSecondaryNumber_HighRange`, the equivalent pair for the
+    secondary/unit range) are configured also each get their own
+    individual output -- e.g. `AddressNumber_LowRange="LOW"` produces a
+    `CLEAN_LOW` holding just that column's own normalized value -- in
+    addition to (not instead of) the combined `CLEAN_AddressNumber` /
+    `CLEAN_AddressSecondaryAddress`. Unlike the always-on segments above,
+    these are only produced when actually configured, since there's no
+    canonical fallback name to invent for "one side of a range."
 
     A highway address (Interstate/Route) sometimes also carries a local
     alias road name, e.g. "Tinmouth Rd" in "VT Route 133 W Tinmouth Rd", or
@@ -1158,6 +1167,24 @@ def standardize_feature_attributes(
     emit(Street_PostType, "Street_PostType", road_type)
     emit(AddressSecondaryAddress, "AddressSecondaryAddress", secondary_address)
     emit("", "Alias", alias)
+
+    # Unlike the always-on segments above, a low/high range column only
+    # gets its own output when it's actually configured -- there's no
+    # canonical fallback name to invent for a role that's just one side of
+    # a range, and most callers won't have set any of these at all. Each
+    # one holds that single column's own value, normalized on its own
+    # (half-value/alphanumeric formatting only -- no merging with a
+    # prefix/suffix or combining with its other half), independent of
+    # whatever the combined CLEAN_AddressNumber / CLEAN_AddressSecondaryAddress
+    # ended up being.
+    for range_param in (
+        AddressNumber_LowRange, AddressNumber_HighRange,
+        AddressNumber_LowRange_Left, AddressNumber_HighRange_Left,
+        AddressNumber_LowRange_Right, AddressNumber_HighRange_Right,
+        AddressSecondaryNumber_LowRange, AddressSecondaryNumber_HighRange,
+    ):
+        if range_param.strip():
+            emit(range_param, range_param, normalize_address_number_token(_get(range_param)))
 
     return flat
 
@@ -1586,7 +1613,9 @@ if __name__ == "__main__":
     # Address number preserved as a low/high range across two columns
     # (e.g. a road-centerline segment), with no single AddressNumber --
     # CLEAN_AddressNumber still falls back to its canonical name since the
-    # AddressNumber parameter itself wasn't configured.
+    # AddressNumber parameter itself wasn't configured. Each range column
+    # also gets its own individual output, since it was directly configured,
+    # in addition to the combined CLEAN_AddressNumber.
     out = standardize_feature_attributes(
         {"LOW": "1", "HIGH": "5", "NAME": "Main St"},
         AddressNumber_LowRange="LOW",
@@ -1595,12 +1624,15 @@ if __name__ == "__main__":
     )
     assert "CLEAN_FullAddress" not in out and "CLEAN_PrimaryAddress" not in out
     assert out["CLEAN_AddressNumber"] == "1-5"
+    assert out["CLEAN_LOW"] == "1"
+    assert out["CLEAN_HIGH"] == "5"
     assert out["CLEAN_NAME"] == "MAIN STREET"
 
     # Address number range split by side of the street across four columns
     # (e.g. odd addresses on the left, even on the right) instead of one
     # combined low/high range -- folded into a single overall range
-    # spanning the lowest to the highest of all four values.
+    # spanning the lowest to the highest of all four values. Each of the
+    # four columns still gets its own individual output too.
     out = standardize_feature_attributes(
         {"LL": "1", "LH": "99", "RL": "2", "RH": "98", "NAME": "Main St"},
         AddressNumber_LowRange_Left="LL", AddressNumber_HighRange_Left="LH",
@@ -1608,6 +1640,10 @@ if __name__ == "__main__":
         PrimaryName="NAME",
     )
     assert out["CLEAN_AddressNumber"] == "1-99"
+    assert out["CLEAN_LL"] == "1"
+    assert out["CLEAN_LH"] == "99"
+    assert out["CLEAN_RL"] == "2"
+    assert out["CLEAN_RH"] == "98"
 
     # If a plain AddressNumber_LowRange/HighRange pair is supplied alongside
     # the left/right split (unusual, but possible with messy source data),
@@ -1701,6 +1737,8 @@ if __name__ == "__main__":
         AddressSecondaryNumber_HighRange="UNIT_HIGH",
     )
     assert out["CLEAN_AddressSecondaryAddress"] == "UNIT 1-5"
+    assert out["CLEAN_UNIT_LOW"] == "1"
+    assert out["CLEAN_UNIT_HIGH"] == "5"
 
     # StreetName is a separate, dedicated bare-name-only field, distinct
     # from PrimaryName -- for a source system that already keeps the name
