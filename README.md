@@ -288,9 +288,12 @@ class AddressCleaner(DownloadedCleaner):
             AddressSecondaryAbbreviation="",
             AddressSecondaryNumber_LowRange="",
             AddressSecondaryNumber_HighRange="",
-            
+
             # --- OUTPUT SETTINGS ---
-            OutputAttributePrefix="CLEAN_"       
+            # Optional: override the default "CLEAN_" prefix on every output
+            # attribute (e.g. "MAIL_" would create "MAIL_STREET_NAME" instead
+            # of "CLEAN_STREET_NAME"). Leave unset/blank to just use "CLEAN_".
+            # OutputAttributePrefix="",
         )
 
     def input(self, feature):
@@ -325,19 +328,19 @@ workspace's behavior to stay fixed over time.
 ### Output naming
 
 Every output attribute name mirrors the attribute name you configured for
-that role, with `Clean_` prepended -- e.g. `PrimaryName="STREET_NAME"`
-produces an output attribute called `Clean_STREET_NAME`. There's no fixed,
+that role, with `CLEAN_` prepended -- e.g. `PrimaryName="STREET_NAME"`
+produces an output attribute called `CLEAN_STREET_NAME`. There's no fixed,
 generic schema to memorize; the output is named after *your* columns.
 
 **The full breakdown is always produced, regardless of which tier of input
 you used.** Supply a combined `FullAddress`, `PrimaryAddress`, or
 `PrimaryName` and you still get the individual pieces back
-(`Clean_AddressNumber`, `Clean_Street_PreDirectional`, `Clean_StreetName`,
-`Clean_Street_PostType`, `Clean_Street_PostDirectional`) -- parsed out
+(`CLEAN_AddressNumber`, `CLEAN_Street_PreDirectional`, `CLEAN_StreetName`,
+`CLEAN_Street_PostType`, `CLEAN_Street_PostDirectional`) -- parsed out
 automatically. Supply only the granular building-block fields and you still
-get a `Clean_PrimaryName` (and, if you gave any secondary-unit fields, a
-`Clean_AddressSecondaryAddress`) constructed from them. The only exception
-is `Clean_FullAddress` / `Clean_PrimaryAddress` themselves: since those are
+get a `CLEAN_PrimaryName` (and, if you gave any secondary-unit fields, a
+`CLEAN_AddressSecondaryAddress`) constructed from them. The only exception
+is `CLEAN_FullAddress` / `CLEAN_PrimaryAddress` themselves: since those are
 strictly *combined* views, they only appear when you actually configured
 `FullAddress` / `PrimaryAddress` -- there's no name to invent for a
 combined view you never asked for.
@@ -355,18 +358,18 @@ useful value for a plain Python caller to check against.)
 
 For any of these always-on outputs, if you *did* directly configure that
 specific role (e.g. you have your own `AddressNumber` column), its output
-uses your configured name (`Clean_` prepended) instead of the canonical
+uses your configured name (`CLEAN_` prepended) instead of the canonical
 fallback name -- this includes `StreetName` (e.g. `StreetName="ST_NAME"`
-produces `Clean_ST_NAME` instead of `Clean_StreetName`).
+produces `CLEAN_ST_NAME` instead of `CLEAN_StreetName`).
 
-**`Clean_Alias` is also always produced, always under its canonical name --
+**`CLEAN_Alias` is also always produced, always under its canonical name --
 there's no input parameter for it to mirror.** A highway address sometimes
 carries a local alias road name in addition to the highway itself (e.g.
 "Tinmouth Rd" in `VT Route 133 W Tinmouth Rd`, or "Weston Rd" in `Weston Rd
 Route 155` -- the alias can come before or after the highway). When one is
-detected, it's split out into `Clean_Alias`, leaving the highway phrase by
-itself in `Clean_PrimaryName` / `Clean_StreetName` / etc.; otherwise
-`Clean_Alias` is `None`. See "Highway aliases" below for exactly what does
+detected, it's split out into `CLEAN_Alias`, leaving the highway phrase by
+itself in `CLEAN_PrimaryName` / `CLEAN_StreetName` / etc.; otherwise
+`CLEAN_Alias` is `None`. See "Highway aliases" below for exactly what does
 and doesn't qualify as one.
 
 ### Worked examples
@@ -382,7 +385,7 @@ All three clean to the same combined result: `2729 VT ROUTE 114 S`, `137
 EAST MAIN STREET`, and `H5 STONEHEDGE DRIVE`, respectively -- and in every
 case, the full segment breakdown is available too:
 
-| Example | Combined result (`Clean_FullAddress` / `Clean_PrimaryAddress` / configured `PrimaryName` output, whichever tier was used) | `Clean_AddressNumber` | `Clean_Street_PreDirectional` | `Clean_StreetName` | `Clean_Street_PostType` | `Clean_Street_PostDirectional` |
+| Example | Combined result (`CLEAN_FullAddress` / `CLEAN_PrimaryAddress` / configured `PrimaryName` output, whichever tier was used) | `CLEAN_AddressNumber` | `CLEAN_Street_PreDirectional` | `CLEAN_StreetName` | `CLEAN_Street_PostType` | `CLEAN_Street_PostDirectional` |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `2729 VT ROUTE 114 S` | `2729` | *(none)* | `VT ROUTE 114` | *(none)* | `S` |
 | 2 | `137 EAST MAIN STREET` | `137` | `EAST` | `MAIN` | `STREET` | *(none)* |
@@ -390,7 +393,7 @@ case, the full segment breakdown is available too:
 
 This full breakdown comes back whether you configured `FullAddress`,
 `PrimaryAddress`, or `PrimaryName` -- or, in reverse, whether you configured
-only the granular fields and let a `Clean_PrimaryName` be constructed from
+only the granular fields and let a `CLEAN_PrimaryName` be constructed from
 them.
 
 ### Parameters, in order
@@ -439,9 +442,9 @@ otherwise it's assumed to be part of the name and kept:
 
 | `PrimaryName` | `Street_PostType` | Result |
 | --- | --- | --- |
-| `Canaan Hill` | `Rd` | `Clean_StreetName` = `CANAAN HILL`, `Clean_Street_PostType` = `ROAD` |
-| `Lake Morey` | `Rd` | `Clean_StreetName` = `LAKE MOREY`, `Clean_Street_PostType` = `ROAD` |
-| `E Main St` | `St` | `Clean_StreetName` = `MAIN`, `Clean_Street_PostType` = `STREET` (redundant `St` dropped) |
+| `Canaan Hill` | `Rd` | `CLEAN_StreetName` = `CANAAN HILL`, `CLEAN_Street_PostType` = `ROAD` |
+| `Lake Morey` | `Rd` | `CLEAN_StreetName` = `LAKE MOREY`, `CLEAN_Street_PostType` = `ROAD` |
+| `E Main St` | `St` | `CLEAN_StreetName` = `MAIN`, `CLEAN_Street_PostType` = `STREET` (redundant `St` dropped) |
 
 **A directional word at the end of `PrimaryName` isn't always a suffix
 directional either.** The same logic applies to words like "North",
@@ -455,13 +458,13 @@ and kept:
 
 | `PrimaryName` | `Street_PostDirectional` | Result |
 | --- | --- | --- |
-| `Old West` | *(none)* | `Clean_StreetName` = `OLD WEST`, `Clean_Street_PostDirectional` = `None` |
-| `Main St S` | *(none)* | `Clean_StreetName` = `MAIN`, `Clean_Street_PostDirectional` = `S` (unambiguous abbreviation) |
-| `Main St South` | `South` | `Clean_StreetName` = `MAIN`, `Clean_Street_PostDirectional` = `S` (redundant `South` dropped) |
+| `Old West` | *(none)* | `CLEAN_StreetName` = `OLD WEST`, `CLEAN_Street_PostDirectional` = `None` |
+| `Main St S` | *(none)* | `CLEAN_StreetName` = `MAIN`, `CLEAN_Street_PostDirectional` = `S` (unambiguous abbreviation) |
+| `Main St South` | `South` | `CLEAN_StreetName` = `MAIN`, `CLEAN_Street_PostDirectional` = `S` (redundant `South` dropped) |
 
 **Highway aliases.** A highway (Interstate/Route) address sometimes also
 carries a local alias road name, either after the highway or before it. When
-one is found, it's split into its own `Clean_Alias` output, leaving the
+one is found, it's split into its own `CLEAN_Alias` output, leaving the
 highway phrase by itself everywhere else -- but only when the extra text
 next to the highway number genuinely looks like a distinct "name plus its
 own road type." A single leading directional between the highway number and
@@ -471,7 +474,7 @@ extra words with no road type of their own (e.g. "Central", "Business",
 dropped, and `Ext` is fully spelled out as `Extension` the same as any other
 road type, rather than being mistaken for an alias itself:
 
-| `PrimaryName` | `Clean_PrimaryName` | `Clean_Alias` |
+| `PrimaryName` | `CLEAN_PrimaryName` | `CLEAN_Alias` |
 | --- | --- | --- |
 | `VT Route 133 W Tinmouth Rd` | `VT ROUTE 133 W` | `TINMOUTH ROAD` |
 | `VT Route 133 Morgan Rd` | `VT ROUTE 133` | `MORGAN ROAD` |
@@ -496,17 +499,17 @@ secondary unit, so see the "Other examples" table below instead.
 
 | Parameter | Meaning |
 | --- | --- |
-| `OutputAttributePrefix` | Optional prefix applied to every attribute this transformer writes back (e.g. `MAIL_`), useful if the same transformer runs more than once in one workspace against different address roles. **Replaces** the default `Clean_` marker entirely -- it never stacks on top of it (e.g. `MAIL_STREET_NAME`, never `MAIL_Clean_STREET_NAME`). |
+| `OutputAttributePrefix` | Optional prefix applied to every attribute this transformer writes back (e.g. `MAIL_`), useful if the same transformer runs more than once in one workspace against different address roles. **Replaces** the default `CLEAN_` marker entirely -- it never stacks on top of it (e.g. `MAIL_STREET_NAME`, never `MAIL_CLEAN_STREET_NAME`). |
 
 A feature type with none of these configured simply yields an empty result
 -- never an error. See "Output naming" above for the full rule; in short:
-`Clean_FullAddress` / `Clean_PrimaryAddress` only appear when you configured
-`FullAddress` / `PrimaryAddress`, but `Clean_PrimaryName`,
-`Clean_StreetName`, `Clean_AddressNumber`, `Clean_Street_PreDirectional`,
-`Clean_Street_PostDirectional`, `Clean_Street_PostType`, and
-`Clean_AddressSecondaryAddress` are always produced, named after whatever
+`CLEAN_FullAddress` / `CLEAN_PrimaryAddress` only appear when you configured
+`FullAddress` / `PrimaryAddress`, but `CLEAN_PrimaryName`,
+`CLEAN_StreetName`, `CLEAN_AddressNumber`, `CLEAN_Street_PreDirectional`,
+`CLEAN_Street_PostDirectional`, `CLEAN_Street_PostType`, and
+`CLEAN_AddressSecondaryAddress` are always produced, named after whatever
 you configured for that role (or their own canonical name if you didn't);
-`Clean_Alias` is always produced too, always under its own canonical name.
+`CLEAN_Alias` is always produced too, always under its own canonical name.
 
 ### Other examples
 
@@ -516,13 +519,13 @@ set" cell:
 
 | Scenario | Fields set | Result |
 | --- | --- | --- |
-| Full address with an embedded unit and a city/state/zip tail | `FullAddress="SITE_ADDRESS"` = `"133 S Burlington St, Apt 4, South Burlington, VT 05403"` | `Clean_SITE_ADDRESS` = `133 SOUTH BURLINGTON STREET, UNIT 4`; `Clean_AddressSecondaryAddress` = `UNIT 4` |
-| Primary + secondary as two combined columns, with an output prefix | `PrimaryAddress="MAIL_PRIMARY"` = `"88 South Hill Rd"`, `AddressSecondaryAddress="MAIL_UNIT"` = `"Ste 2"`, `OutputAttributePrefix="MAIL_STD_"` | `MAIL_STD_MAIL_PRIMARY` = `88 SOUTH HILL ROAD`; `MAIL_STD_MAIL_UNIT` = `UNIT 2`; `MAIL_STD_Street_PostType` = `ROAD` (canonical name, since `Street_PostType` wasn't configured; `MAIL_STD_` replaces the default `Clean_` marker on every attribute, rather than stacking on top of it) |
-| Address-number range (road-centerline segment), building blocks only | `AddressNumber_LowRange="1"`, `AddressNumber_HighRange="5"`, `PrimaryName="NAME"` = `"Main St"` | `Clean_AddressNumber` = `1-5` (canonical, since `AddressNumber` itself wasn't configured); `Clean_NAME` = `MAIN STREET` |
-| Address-number range split by side of the street across four columns | `AddressNumber_LowRange_Left="1"`, `AddressNumber_HighRange_Left="99"`, `AddressNumber_LowRange_Right="2"`, `AddressNumber_HighRange_Right="98"` | `Clean_AddressNumber` = `1-99` (the overall lowest-to-highest span across all four values, not a separate value per side) |
-| Half-value number from a split `AddressNumber` + `AddressNumber_Suffix` | `AddressNumber="NUM"` = `"33"`, `AddressNumber_Suffix="SUF"` = `"1/2"`, `PrimaryName="NAME"` = `"Main St"` | `Clean_NUM` = `33 1/2`; `Clean_NAME` = `MAIN STREET` |
-| Secondary unit from a split abbreviation + range | `AddressSecondaryAbbreviation="Apt"`, `AddressSecondaryNumber_LowRange="1"`, `AddressSecondaryNumber_HighRange="5"` | `Clean_AddressSecondaryAddress` = `UNIT 1-5` (canonical, since `AddressSecondaryAddress` itself wasn't configured) |
-| No address-role parameters set at all | *(nothing)* | `Clean_PrimaryName`, `Clean_StreetName`, `Clean_AddressNumber`, etc. are all present holding `None`; `Clean_FullAddress` / `Clean_PrimaryAddress` don't appear at all -- never an error |
+| Full address with an embedded unit and a city/state/zip tail | `FullAddress="SITE_ADDRESS"` = `"133 S Burlington St, Apt 4, South Burlington, VT 05403"` | `CLEAN_SITE_ADDRESS` = `133 SOUTH BURLINGTON STREET, UNIT 4`; `CLEAN_AddressSecondaryAddress` = `UNIT 4` |
+| Primary + secondary as two combined columns, with an output prefix | `PrimaryAddress="MAIL_PRIMARY"` = `"88 South Hill Rd"`, `AddressSecondaryAddress="MAIL_UNIT"` = `"Ste 2"`, `OutputAttributePrefix="MAIL_STD_"` | `MAIL_STD_MAIL_PRIMARY` = `88 SOUTH HILL ROAD`; `MAIL_STD_MAIL_UNIT` = `UNIT 2`; `MAIL_STD_Street_PostType` = `ROAD` (canonical name, since `Street_PostType` wasn't configured; `MAIL_STD_` replaces the default `CLEAN_` marker on every attribute, rather than stacking on top of it) |
+| Address-number range (road-centerline segment), building blocks only | `AddressNumber_LowRange="1"`, `AddressNumber_HighRange="5"`, `PrimaryName="NAME"` = `"Main St"` | `CLEAN_AddressNumber` = `1-5` (canonical, since `AddressNumber` itself wasn't configured); `CLEAN_NAME` = `MAIN STREET` |
+| Address-number range split by side of the street across four columns | `AddressNumber_LowRange_Left="1"`, `AddressNumber_HighRange_Left="99"`, `AddressNumber_LowRange_Right="2"`, `AddressNumber_HighRange_Right="98"` | `CLEAN_AddressNumber` = `1-99` (the overall lowest-to-highest span across all four values, not a separate value per side) |
+| Half-value number from a split `AddressNumber` + `AddressNumber_Suffix` | `AddressNumber="NUM"` = `"33"`, `AddressNumber_Suffix="SUF"` = `"1/2"`, `PrimaryName="NAME"` = `"Main St"` | `CLEAN_NUM` = `33 1/2`; `CLEAN_NAME` = `MAIN STREET` |
+| Secondary unit from a split abbreviation + range | `AddressSecondaryAbbreviation="Apt"`, `AddressSecondaryNumber_LowRange="1"`, `AddressSecondaryNumber_HighRange="5"` | `CLEAN_AddressSecondaryAddress` = `UNIT 1-5` (canonical, since `AddressSecondaryAddress` itself wasn't configured) |
+| No address-role parameters set at all | *(nothing)* | `CLEAN_PrimaryName`, `CLEAN_StreetName`, `CLEAN_AddressNumber`, etc. are all present holding `None`; `CLEAN_FullAddress` / `CLEAN_PrimaryAddress` don't appear at all -- never an error |
 
 This module only standardizes address *numbers* and *street names*; it
 never inspects or cleans city, state, or zip/zip+4 values, beyond
