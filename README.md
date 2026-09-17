@@ -325,6 +325,45 @@ changes underneath it and there's no version pinning. Pin to a specific
 commit SHA in `GITHUB_RAW_URL` (instead of `master`) if you need a
 workspace's behavior to stay fixed over time.
 
+### Exposing the new attributes
+
+A PythonCaller's newly-created attributes (everything with the `CLEAN_`
+marker) don't automatically become visible to downstream transformers or a
+Writer -- FME only shows attributes it already knows about. Add an
+**AttributeExposer** transformer right after the PythonCaller and list out
+the specific `CLEAN_` attribute names you want to use further downstream
+(see "Output naming" below for exactly how each one is named).
+
+A few things that are easy to miss when deciding which ones to expose:
+
+- **Expose the cleaned equivalent of every input you configured.** If you
+  mapped `PrimaryName="STREET_NAME"`, expose `CLEAN_STREET_NAME`; if you
+  mapped `AddressNumber="Add_Number"`, expose `CLEAN_Add_Number`; and so on
+  for every parameter you gave a column name to.
+- **The Tier 2 building-block route still produces a constructed
+  `CLEAN_PrimaryName`, and it needs exposing too.** Even if you never
+  configured `PrimaryName` at all -- only `StreetName` /
+  `Street_PreDirectional` / `Street_PostDirectional` / `Street_PostType` --
+  the output still includes both the individual `CLEAN_` subparts *and* a
+  `CLEAN_PrimaryName` built from them. If you want that combined view
+  downstream, you have to expose `CLEAN_PrimaryName` explicitly, the same
+  as if you'd configured `PrimaryName` yourself.
+- **Configuring `FullAddress` or `PrimaryAddress` does *not* mean you only
+  get one combined output.** You get *both*: the combined `CLEAN_<your
+  column>` (e.g. `CLEAN_SITE_ADDRESS`) *and* the full subpart breakdown
+  parsed out of it (`CLEAN_PrimaryName`, `CLEAN_StreetName`,
+  `CLEAN_AddressNumber`, `CLEAN_Street_PreDirectional`,
+  `CLEAN_Street_PostDirectional`, `CLEAN_Street_PostType`) -- all produced
+  at once from the same input. Expose whichever of these you actually need;
+  none of them are optional extras you can skip configuring, since they're
+  always computed regardless of which tier of input you used.
+- Don't forget `CLEAN_AddressSecondaryAddress` (if you configured any
+  secondary/unit fields), `CLEAN_Alias` (produced automatically whenever a
+  highway alias is found -- see "Highway aliases" below), and an individual
+  `CLEAN_<column>` for each low/high range column you configured (see
+  "Parameters, in order" below) -- these are easy to forget since they
+  don't share a name with the input you're used to looking for.
+
 ### Output naming
 
 Every output attribute name mirrors the attribute name you configured for
