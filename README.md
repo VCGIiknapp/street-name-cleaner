@@ -334,35 +334,61 @@ Writer -- FME only shows attributes it already knows about. Add an
 the specific `CLEAN_` attribute names you want to use further downstream
 (see "Output naming" below for exactly how each one is named).
 
-A few things that are easy to miss when deciding which ones to expose:
+New attributes can show up even when you didn't directly configure the
+role that produced them (see the Tier 2 and combined-input notes below),
+so the safest approach is to expose everything in both lists below up
+front, run the workspace once, and then remove whichever ones you confirm
+are always empty for your particular feature type -- rather than trying to
+predict up front exactly which ones will have data.
 
-- **Expose the cleaned equivalent of every input you configured.** If you
-  mapped `PrimaryName="STREET_NAME"`, expose `CLEAN_STREET_NAME`; if you
-  mapped `AddressNumber="Add_Number"`, expose `CLEAN_Add_Number`; and so on
-  for every parameter you gave a column name to.
+**Always expose these**, regardless of which input tier you used (canonical
+names shown; each one may instead be named `CLEAN_<your column>` if you
+directly configured that role -- see "Output naming" below):
+
+- `CLEAN_AddressSecondaryAddress`
+- `CLEAN_Alias`
+- `CLEAN_PrimaryName`
+- `CLEAN_StreetName`
+- `CLEAN_Street_PreDirectional`
+- `CLEAN_Street_PostDirectional`
+- `CLEAN_Street_PostType`
+- `CLEAN_AddressNumber`
+
+**Then also expose the cleaned equivalent of any of these you actually
+configured** -- named after whichever column you mapped each one to (e.g.
+`AddressNumber_Prefix="H_PRE"` produces `CLEAN_H_PRE`, not a fixed
+canonical name), since none of these have a canonical fallback name of
+their own:
+
+- `AddressNumber_Prefix`
+- `AddressNumber_Suffix`
+- `AddressNumber_LowRange`
+- `AddressNumber_HighRange`
+- `AddressNumber_LowRange_Left`
+- `AddressNumber_HighRange_Left`
+- `AddressNumber_LowRange_Right`
+- `AddressNumber_HighRange_Right`
+- `AddressSecondaryAbbreviation`
+- `AddressSecondaryNumber_LowRange`
+- `AddressSecondaryNumber_HighRange`
+
+A few things that are easy to miss:
+
 - **The Tier 2 building-block route still produces a constructed
-  `CLEAN_PrimaryName`, and it needs exposing too.** Even if you never
-  configured `PrimaryName` at all -- only `StreetName` /
-  `Street_PreDirectional` / `Street_PostDirectional` / `Street_PostType` --
-  the output still includes both the individual `CLEAN_` subparts *and* a
-  `CLEAN_PrimaryName` built from them. If you want that combined view
-  downstream, you have to expose `CLEAN_PrimaryName` explicitly, the same
-  as if you'd configured `PrimaryName` yourself.
+  `CLEAN_PrimaryName`.** Even if you never configured `PrimaryName` at all
+  -- only `StreetName` / `Street_PreDirectional` / `Street_PostDirectional`
+  / `Street_PostType` -- the output still includes both the individual
+  `CLEAN_` subparts *and* a `CLEAN_PrimaryName` built from them.
 - **Configuring `FullAddress` or `PrimaryAddress` does *not* mean you only
   get one combined output.** You get *both*: the combined `CLEAN_<your
   column>` (e.g. `CLEAN_SITE_ADDRESS`) *and* the full subpart breakdown
   parsed out of it (`CLEAN_PrimaryName`, `CLEAN_StreetName`,
   `CLEAN_AddressNumber`, `CLEAN_Street_PreDirectional`,
   `CLEAN_Street_PostDirectional`, `CLEAN_Street_PostType`) -- all produced
-  at once from the same input. Expose whichever of these you actually need;
-  none of them are optional extras you can skip configuring, since they're
-  always computed regardless of which tier of input you used.
-- Don't forget `CLEAN_AddressSecondaryAddress` (if you configured any
-  secondary/unit fields), `CLEAN_Alias` (produced automatically whenever a
-  highway alias is found -- see "Highway aliases" below), and an individual
-  `CLEAN_<column>` for each low/high range column you configured (see
-  "Parameters, in order" below) -- these are easy to forget since they
-  don't share a name with the input you're used to looking for.
+  at once from the same input.
+- `CLEAN_Alias` is produced automatically whenever a highway alias is
+  found (see "Highway aliases" below) -- there's no input parameter for it
+  to be configured under, so it's easy to overlook.
 
 ### Output naming
 
@@ -457,22 +483,23 @@ the address is assembled from these instead:
 | `AddressNumber_LowRange` | Low end of an address-number range, in its own column (e.g. a road-centerline segment); used when `AddressNumber` is blank. Not used in any of the three examples. | -- | -- | -- |
 | `AddressNumber_HighRange` | High end of that same range, in a second, separate column. Not used in any of the three examples. | -- | -- | -- |
 | `AddressNumber_LowRange_Left` / `AddressNumber_HighRange_Left` / `AddressNumber_LowRange_Right` / `AddressNumber_HighRange_Right` | An alternative to the plain `AddressNumber_LowRange`/`AddressNumber_HighRange` pair, for a road-centerline dataset that instead splits the address range by side of the street (e.g. odd addresses on the left, even on the right, each with its own low/high). Whichever of these -- along with `AddressNumber`/`AddressNumber_LowRange`/`AddressNumber_HighRange` -- are actually populated are folded into one overall range spanning the lowest to the highest value given; this module tracks a single address number/range per feature, not a separate value per side. Not used in any of the three examples. | -- | -- | -- |
-
-Whichever of the six low/high range parameters above are actually
-configured *also* each get their own individual output, in addition to the
-combined `CLEAN_AddressNumber` -- e.g. `AddressNumber_LowRange="LOW"`
-produces a `CLEAN_LOW` holding just that column's own normalized value
-(half-value/alphanumeric formatting only, no merging with a prefix/suffix
-or combining with its other half). Unlike the always-on segments elsewhere
-on this page, these aren't produced at all unless directly configured --
-there's no canonical fallback name for "one side of a range" to invent.
-`AddressSecondaryNumber_LowRange`/`AddressSecondaryNumber_HighRange`
-(below) work the same way.
 | `AddressNumber_Prefix` | A letter (or rural camp/lot word like "LOT"/"CABIN") immediately before the number, merged tight per rule 3 (`H` + `5` -> `H5`). | *(none)* | *(none)* | `H` |
 | `AddressNumber_Suffix` | A letter suffix on the number, merged tight the same way (e.g. `A` -> `...28A`), or `1/2` for a half value (kept with a space: `33 1/2`). | *(none)* | *(none)* | *(none)* |
 | `Street_PreDirectional` | e.g. `"E"`. | *(none)* | `E` | *(none)* |
 | `Street_PostDirectional` | e.g. `"N"` or `"South"` (both accepted). | `South` | *(none)* | *(none)* |
 | `Street_PostType` | e.g. `"St"` or `"Drive"`. | *(none)* | `St` | `Drive` |
+
+`AddressNumber_Prefix`, `AddressNumber_Suffix`, and whichever of the six
+low/high range parameters above are actually configured *also* each get
+their own individual output, in addition to the combined
+`CLEAN_AddressNumber` -- e.g. `AddressNumber_LowRange="LOW"` produces a
+`CLEAN_LOW` holding just that column's own normalized value (on its own,
+with no merging or combining with the rest of the address number). Unlike
+the always-on segments elsewhere on this page, these aren't produced at
+all unless directly configured -- there's no canonical fallback name for
+"a prefix," "a suffix," or "one side of a range" to invent.
+`AddressSecondaryAbbreviation` and `AddressSecondaryNumber_LowRange` /
+`AddressSecondaryNumber_HighRange` (below) work the same way.
 
 Whenever `Street_PreDirectional` / `Street_PostDirectional` / `Street_PostType`
 are explicitly supplied, they take precedence over whatever `PrimaryName`
@@ -541,7 +568,7 @@ secondary unit, so see the "Other examples" table below instead.
 | Parameter | Meaning |
 | --- | --- |
 | `AddressSecondaryAddress` | A combined secondary/unit address, e.g. `"Apt 1"`. Highest priority for the secondary address; if set, the two parameters below are ignored. |
-| `AddressSecondaryAbbreviation` | e.g. `"Apt"`. |
+| `AddressSecondaryAbbreviation` | e.g. `"Apt"`. Normalizes to `"UNIT"` (like every recognized secondary/unit designator) in its own individual output, when configured, in addition to the combined `CLEAN_AddressSecondaryAddress`. |
 | `AddressSecondaryNumber_LowRange` | Low end of a secondary-unit number range, in its own column; used when `AddressSecondaryAddress` is blank. |
 | `AddressSecondaryNumber_HighRange` | High end of that same range, in a second, separate column. |
 

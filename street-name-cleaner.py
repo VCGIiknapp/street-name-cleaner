@@ -689,6 +689,17 @@ def normalize_street_name(value: str) -> Optional[str]:
     return " ".join(tokens) if tokens else None
 
 
+def normalize_secondary_abbreviation(value: str) -> Optional[str]:
+    """Normalize a value already known to be a secondary/unit-type
+    abbreviation (e.g. "Apt", "Ste") to its canonical form. Every
+    recognized secondary/unit designator normalizes to the same word,
+    "UNIT" (rule 2), so there's no distinct per-abbreviation "cleaned" form
+    to preserve -- an unrecognized abbreviation still normalizes to "UNIT"
+    too, matching `_build_secondary_from_parts()`."""
+    token = value.strip().upper() if value else ""
+    return SECONDARY_UNIT_MAP.get(token, "UNIT") if token else None
+
+
 def normalize_address_number_token(value: str) -> Optional[str]:
     """Apply the half-value / alphanumeric formatting rules (rule 3) to a
     single, already-isolated address-number value (no surrounding street
@@ -1088,16 +1099,21 @@ def standardize_feature_attributes(
     of these five address-number inputs are actually populated are folded
     into one overall range spanning their lowest to highest value, since
     this module only tracks a single address number/range per feature, not
-    a separate value per side. Whichever of these six low/high range
-    parameters (plus `AddressSecondaryNumber_LowRange` /
-    `AddressSecondaryNumber_HighRange`, the equivalent pair for the
-    secondary/unit range) are configured also each get their own
-    individual output -- e.g. `AddressNumber_LowRange="LOW"` produces a
-    `CLEAN_LOW` holding just that column's own normalized value -- in
-    addition to (not instead of) the combined `CLEAN_AddressNumber` /
-    `CLEAN_AddressSecondaryAddress`. Unlike the always-on segments above,
-    these are only produced when actually configured, since there's no
-    canonical fallback name to invent for "one side of a range."
+    a separate value per side.
+
+    Whichever of `AddressNumber_Prefix`, `AddressNumber_Suffix`, the six
+    low/high range parameters above, `AddressSecondaryAbbreviation`, and
+    `AddressSecondaryNumber_LowRange` / `AddressSecondaryNumber_HighRange`
+    (the equivalent pair for the secondary/unit range) are configured also
+    each get their own individual output -- e.g. `AddressNumber_LowRange="LOW"`
+    produces a `CLEAN_LOW` holding just that column's own normalized value,
+    and `AddressSecondaryAbbreviation="APT_TYPE"` produces a `CLEAN_APT_TYPE`
+    holding its normalized "UNIT" -- in addition to (not instead of) the
+    combined `CLEAN_AddressNumber` / `CLEAN_AddressSecondaryAddress`. Unlike
+    the always-on segments above, these are only produced when actually
+    configured, since there's no canonical fallback name to invent for a
+    role that's just a prefix, a suffix, an abbreviation, or one side of a
+    range.
 
     A highway address (Interstate/Route) sometimes also carries a local
     alias road name, e.g. "Tinmouth Rd" in "VT Route 133 W Tinmouth Rd", or
@@ -1168,23 +1184,30 @@ def standardize_feature_attributes(
     emit(AddressSecondaryAddress, "AddressSecondaryAddress", secondary_address)
     emit("", "Alias", alias)
 
-    # Unlike the always-on segments above, a low/high range column only
-    # gets its own output when it's actually configured -- there's no
-    # canonical fallback name to invent for a role that's just one side of
-    # a range, and most callers won't have set any of these at all. Each
-    # one holds that single column's own value, normalized on its own
-    # (half-value/alphanumeric formatting only -- no merging with a
-    # prefix/suffix or combining with its other half), independent of
-    # whatever the combined CLEAN_AddressNumber / CLEAN_AddressSecondaryAddress
+    # Unlike the always-on segments above, these modifier/range columns only
+    # get their own output when actually configured -- there's no canonical
+    # fallback name to invent for a role that's just a prefix, a suffix, an
+    # abbreviation, or one side of a range, and most callers won't have set
+    # any of these at all. Each one holds that single column's own value,
+    # normalized on its own (no merging with the rest of the address
+    # number, and no combining with its other half of a range), independent
+    # of whatever the combined CLEAN_AddressNumber / CLEAN_AddressSecondaryAddress
     # ended up being.
-    for range_param in (
-        AddressNumber_LowRange, AddressNumber_HighRange,
-        AddressNumber_LowRange_Left, AddressNumber_HighRange_Left,
-        AddressNumber_LowRange_Right, AddressNumber_HighRange_Right,
-        AddressSecondaryNumber_LowRange, AddressSecondaryNumber_HighRange,
+    for modifier_param, normalizer in (
+        (AddressNumber_Prefix, normalize_address_number_token),
+        (AddressNumber_Suffix, normalize_address_number_token),
+        (AddressNumber_LowRange, normalize_address_number_token),
+        (AddressNumber_HighRange, normalize_address_number_token),
+        (AddressNumber_LowRange_Left, normalize_address_number_token),
+        (AddressNumber_HighRange_Left, normalize_address_number_token),
+        (AddressNumber_LowRange_Right, normalize_address_number_token),
+        (AddressNumber_HighRange_Right, normalize_address_number_token),
+        (AddressSecondaryAbbreviation, normalize_secondary_abbreviation),
+        (AddressSecondaryNumber_LowRange, normalize_address_number_token),
+        (AddressSecondaryNumber_HighRange, normalize_address_number_token),
     ):
-        if range_param.strip():
-            emit(range_param, range_param, normalize_address_number_token(_get(range_param)))
+        if modifier_param.strip():
+            emit(modifier_param, modifier_param, normalizer(_get(modifier_param)))
 
     return flat
 
@@ -1657,13 +1680,31 @@ if __name__ == "__main__":
     )
     assert out["CLEAN_AddressNumber"] == "1-198"
 
-    # Half-value number built from a split AddressNumber + AddressNumber_Suffix.
+    # Half-value number built from a split AddressNumber + AddressNumber_Suffix
+    # -- AddressNumber_Prefix/_Suffix each also get their own individual
+    # output, in addition to the merged CLEAN_NUM.
     out = standardize_feature_attributes(
-        {"NUM": "33", "SUF": "1/2", "NAME": "Main St"},
-        AddressNumber="NUM", AddressNumber_Suffix="SUF", PrimaryName="NAME",
+        {"NUM": "33", "PRE": "H", "SUF": "1/2", "NAME": "Main St"},
+        AddressNumber="NUM", AddressNumber_Prefix="PRE", AddressNumber_Suffix="SUF",
+        PrimaryName="NAME",
     )
-    assert out["CLEAN_NUM"] == "33 1/2"
+    assert out["CLEAN_NUM"] == "H33 1/2"
+    assert out["CLEAN_PRE"] == "H"
+    assert out["CLEAN_SUF"] == "1/2"
     assert out["CLEAN_NAME"] == "MAIN STREET"
+
+    # AddressSecondaryAbbreviation also gets its own individual output --
+    # normalized to "UNIT" the same as every other recognized abbreviation,
+    # in addition to the combined CLEAN_AddressSecondaryAddress.
+    out = standardize_feature_attributes(
+        {"ABBR": "Apt", "LOW": "1", "HIGH": "5"},
+        AddressSecondaryAbbreviation="ABBR",
+        AddressSecondaryNumber_LowRange="LOW", AddressSecondaryNumber_HighRange="HIGH",
+    )
+    assert out["CLEAN_AddressSecondaryAddress"] == "UNIT 1-5"
+    assert out["CLEAN_ABBR"] == "UNIT"
+    assert out["CLEAN_LOW"] == "1"
+    assert out["CLEAN_HIGH"] == "5"
 
     # A word that's also a valid road type (Hill, Lake, ...) but is really
     # part of the street name must not be stripped out just because
