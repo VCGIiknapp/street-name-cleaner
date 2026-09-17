@@ -711,18 +711,28 @@ def normalize_address_number_token(value: str) -> Optional[str]:
     return token
 
 
-def combine_number_range(low: str, high: str) -> Optional[str]:
-    """Normalize a low/high number range preserved in separate columns (e.g.
-    road-centerline address ranges, or a secondary-unit number range) into
-    one token, such as "1-5". Each side is independently run through
-    `normalize_address_number_token()` first. If only one side is present,
-    or both sides are equal, returns that single normalized value rather
-    than a range."""
-    low_n = normalize_address_number_token(low)
-    high_n = normalize_address_number_token(high)
-    if low_n and high_n and low_n != high_n:
-        return f"{low_n}-{high_n}"
-    return low_n or high_n
+def combine_number_range(*values: str) -> Optional[str]:
+    """Normalize a low/high number range preserved across separate columns
+    (e.g. a road-centerline address range, further split by left/right side
+    of the street into up to four columns, or a secondary-unit number
+    range) into one token, such as "1-5". Each value is independently run
+    through `normalize_address_number_token()` first, and blanks are
+    ignored. If only one distinct value remains once blanks are dropped,
+    that single normalized value is returned rather than a range.
+    Otherwise, the overall lowest and highest of *all* the given values (by
+    leading numeric value) are joined with a hyphen -- not just the first
+    and last argument -- so which side (left/right, low/high) each value
+    came from, or the order they're passed in, doesn't matter."""
+    normalized = [v for v in (normalize_address_number_token(value) for value in values) if v]
+    if not normalized:
+        return None
+
+    unique = list(dict.fromkeys(normalized))
+    if len(unique) == 1:
+        return unique[0]
+
+    unique.sort(key=lambda token: _to_number(token) or 0)
+    return f"{unique[0]}-{unique[-1]}"
 
 
 def parse_primary_remainder(
@@ -825,6 +835,12 @@ def parse_primary_remainder(
 #   AddressNumber_LowRange    | (alternative to AddressNumber, when only a
 #   AddressNumber_HighRange   |  low/high range is available, e.g. a road-
 #                             |  centerline segment)
+#   AddressNumber_LowRange_Left    | (alternative to AddressNumber_LowRange /
+#   AddressNumber_HighRange_Left   |  AddressNumber_HighRange, when a
+#   AddressNumber_LowRange_Right   |  dataset instead splits the range by
+#   AddressNumber_HighRange_Right  |  side of the street, e.g. odd addresses
+#                             |  on the left and even on the right; all
+#                             |  four are folded into one overall range)
 #   AddressNumber_Prefix      | ""                     | ""               | "H"
 #   AddressNumber_Suffix      | ""                     | ""               | ""
 #   Street_PreDirectional     | ""                     | "E"              | ""
@@ -936,6 +952,10 @@ def _build_primary_from_parts(
     address_number: str,
     address_number_low: str,
     address_number_high: str,
+    address_number_low_left: str,
+    address_number_high_left: str,
+    address_number_low_right: str,
+    address_number_high_right: str,
     address_number_prefix: str,
     address_number_suffix: str,
     street_pre_directional: str,
@@ -961,12 +981,26 @@ def _build_primary_from_parts(
     since it's a more authoritative signal than text that still has to be
     parsed. If `primary_name` (or a highway phrase within it) carries a
     local alias road name -- see `parse_highway()` -- it's returned
-    separately as `alias`, alongside the regular segments. Returns
-    (address_number, prefix_directional, street_name, road_type,
+    separately as `alias`, alongside the regular segments.
+
+    `address_number_low` / `address_number_high` cover a single combined
+    range (e.g. a road-centerline segment with one address range); the
+    `_left` / `_right` variants instead cover a range that's split by side
+    of the street (e.g. odd-numbered addresses on the left, even-numbered
+    on the right), which some road-centerline datasets use instead of one
+    combined range. Whichever of these five inputs (`address_number`, or
+    any combination of the four low/high range fields) are actually
+    supplied, they're all folded into one overall range spanning the lowest
+    to the highest value given -- this module only tracks a single address
+    number/range per segment, not separate per-side output.
+
+    Returns (address_number, prefix_directional, street_name, road_type,
     suffix_directional, alias); any that have no corresponding input are
     None."""
     base_number = normalize_address_number_token(address_number) if address_number else combine_number_range(
-        address_number_low, address_number_high
+        address_number_low, address_number_high,
+        address_number_low_left, address_number_high_left,
+        address_number_low_right, address_number_high_right,
     )
     number = _merge_address_number_parts(address_number_prefix, base_number, address_number_suffix)
 
@@ -995,6 +1029,10 @@ def standardize_feature_attributes(
     AddressNumber: str = "",
     AddressNumber_LowRange: str = "",
     AddressNumber_HighRange: str = "",
+    AddressNumber_LowRange_Left: str = "",
+    AddressNumber_HighRange_Left: str = "",
+    AddressNumber_LowRange_Right: str = "",
+    AddressNumber_HighRange_Right: str = "",
     AddressNumber_Prefix: str = "",
     AddressNumber_Suffix: str = "",
     Street_PreDirectional: str = "",
@@ -1040,6 +1078,18 @@ def standardize_feature_attributes(
     `PrimaryAddress` was itself supplied, rather than being invented a name
     for when it wasn't.
 
+    `AddressNumber_LowRange` / `AddressNumber_HighRange` cover a single
+    combined address-number range (e.g. a road-centerline segment with one
+    address range), used when `AddressNumber` itself is blank.
+    `AddressNumber_LowRange_Left` / `AddressNumber_HighRange_Left` /
+    `AddressNumber_LowRange_Right` / `AddressNumber_HighRange_Right` are an
+    alternative for datasets that instead split that range by side of the
+    street (e.g. odd addresses on the left, even on the right); whichever
+    of these five address-number inputs are actually populated are folded
+    into one overall range spanning their lowest to highest value, since
+    this module only tracks a single address number/range per feature, not
+    a separate value per side.
+
     A highway address (Interstate/Route) sometimes also carries a local
     alias road name, e.g. "Tinmouth Rd" in "VT Route 133 W Tinmouth Rd", or
     "Weston Rd" in "Weston Rd Route 155". When one is detected -- see
@@ -1078,6 +1128,8 @@ def standardize_feature_attributes(
         number, prefix_dir, name, road_type, suffix_dir, alias = _build_primary_from_parts(
             _get(PrimaryName), _get(StreetName),
             _get(AddressNumber), _get(AddressNumber_LowRange), _get(AddressNumber_HighRange),
+            _get(AddressNumber_LowRange_Left), _get(AddressNumber_HighRange_Left),
+            _get(AddressNumber_LowRange_Right), _get(AddressNumber_HighRange_Right),
             _get(AddressNumber_Prefix), _get(AddressNumber_Suffix),
             _get(Street_PreDirectional), _get(Street_PostDirectional), _get(Street_PostType),
         )
@@ -1126,6 +1178,10 @@ class AddressCleaner:
         AddressNumber: str = "",
         AddressNumber_LowRange: str = "",
         AddressNumber_HighRange: str = "",
+        AddressNumber_LowRange_Left: str = "",
+        AddressNumber_HighRange_Left: str = "",
+        AddressNumber_LowRange_Right: str = "",
+        AddressNumber_HighRange_Right: str = "",
         AddressNumber_Prefix: str = "",
         AddressNumber_Suffix: str = "",
         Street_PreDirectional: str = "",
@@ -1144,6 +1200,10 @@ class AddressCleaner:
         self.AddressNumber = AddressNumber
         self.AddressNumber_LowRange = AddressNumber_LowRange
         self.AddressNumber_HighRange = AddressNumber_HighRange
+        self.AddressNumber_LowRange_Left = AddressNumber_LowRange_Left
+        self.AddressNumber_HighRange_Left = AddressNumber_HighRange_Left
+        self.AddressNumber_LowRange_Right = AddressNumber_LowRange_Right
+        self.AddressNumber_HighRange_Right = AddressNumber_HighRange_Right
         self.AddressNumber_Prefix = AddressNumber_Prefix
         self.AddressNumber_Suffix = AddressNumber_Suffix
         self.Street_PreDirectional = Street_PreDirectional
@@ -1166,6 +1226,10 @@ class AddressCleaner:
             self.AddressNumber,
             self.AddressNumber_LowRange,
             self.AddressNumber_HighRange,
+            self.AddressNumber_LowRange_Left,
+            self.AddressNumber_HighRange_Left,
+            self.AddressNumber_LowRange_Right,
+            self.AddressNumber_HighRange_Right,
             self.AddressNumber_Prefix,
             self.AddressNumber_Suffix,
             self.Street_PreDirectional,
@@ -1532,6 +1596,30 @@ if __name__ == "__main__":
     assert "Clean_FullAddress" not in out and "Clean_PrimaryAddress" not in out
     assert out["Clean_AddressNumber"] == "1-5"
     assert out["Clean_NAME"] == "MAIN STREET"
+
+    # Address number range split by side of the street across four columns
+    # (e.g. odd addresses on the left, even on the right) instead of one
+    # combined low/high range -- folded into a single overall range
+    # spanning the lowest to the highest of all four values.
+    out = standardize_feature_attributes(
+        {"LL": "1", "LH": "99", "RL": "2", "RH": "98", "NAME": "Main St"},
+        AddressNumber_LowRange_Left="LL", AddressNumber_HighRange_Left="LH",
+        AddressNumber_LowRange_Right="RL", AddressNumber_HighRange_Right="RH",
+        PrimaryName="NAME",
+    )
+    assert out["Clean_AddressNumber"] == "1-99"
+
+    # If a plain AddressNumber_LowRange/HighRange pair is supplied alongside
+    # the left/right split (unusual, but possible with messy source data),
+    # all of them are folded together into one overall span rather than one
+    # silently overriding the other.
+    out = standardize_feature_attributes(
+        {"LOW": "1", "HIGH": "5", "LL": "100", "LH": "198", "NAME": "Main St"},
+        AddressNumber_LowRange="LOW", AddressNumber_HighRange="HIGH",
+        AddressNumber_LowRange_Left="LL", AddressNumber_HighRange_Left="LH",
+        PrimaryName="NAME",
+    )
+    assert out["Clean_AddressNumber"] == "1-198"
 
     # Half-value number built from a split AddressNumber + AddressNumber_Suffix.
     out = standardize_feature_attributes(

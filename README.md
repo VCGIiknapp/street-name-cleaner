@@ -2,7 +2,7 @@
 
 Standardizes US address formats for Vermont E911 data.
 
-`street_name_cleaner.py` is a self-contained Python module (standard library
+`street-name-cleaner.py` is a self-contained Python module (standard library
 only) that parses a raw address string and returns a structured, normalized
 result following Vermont-specific business rules for:
 
@@ -63,12 +63,26 @@ The rule: when a single letter immediately follows the address number,
 
 ## Usage
 
-```python
-from street_name_cleaner import standardize_address
+The module's filename (`street-name-cleaner.py`) uses hyphens, which aren't
+legal in a Python identifier -- so a plain `import street-name-cleaner`
+won't work. Load it by file path with `importlib` instead:
 
-result = standardize_address("123 N Main St")
+```python
+import importlib.util
+
+spec = importlib.util.spec_from_file_location("street_name_cleaner", "street-name-cleaner.py")
+street_name_cleaner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(street_name_cleaner)
+
+result = street_name_cleaner.standardize_address("123 N Main St")
 print(result["full_address"])   # "123 NORTH MAIN STREET"
 ```
+
+(Running the file directly as a script -- `python street-name-cleaner.py` --
+is unaffected by the hyphen and works exactly as you'd expect; see
+"Testing" below. The FME wrapper's GitHub-fetch-and-`exec()` approach is
+also unaffected, since it never uses a literal `import` statement either --
+see "Using from FME Form" below.)
 
 `standardize_address()` returns:
 
@@ -97,7 +111,7 @@ columns.
 ## Examples
 
 Every example below is taken directly from the module's self-test suite
-(`python street_name_cleaner.py`), so this table is guaranteed to stay in
+(`python street-name-cleaner.py`), so this table is guaranteed to stay in
 sync with what the code actually does.
 
 | Input | `full_address` output | Demonstrates |
@@ -133,7 +147,7 @@ sync with what the code actually does.
 ## Testing
 
 ```
-python street_name_cleaner.py
+python street-name-cleaner.py
 ```
 
 Runs the module's built-in `assert`-based test suite covering documented
@@ -192,13 +206,13 @@ import fme
 import fmeobjects
 
 # 1. Fetch the updated code from GitHub
-GITHUB_RAW_URL = "https://raw.githubusercontent.com/VCGIiknapp/street-name-cleaner/master/street_name_cleaner.py"
+GITHUB_RAW_URL = "https://raw.githubusercontent.com/VCGIiknapp/street-name-cleaner/master/street-name-cleaner.py"
 
 try:
     response = urllib.request.urlopen(GITHUB_RAW_URL)
     script_code = response.read().decode('utf-8')
 except Exception as e:
-    raise RuntimeError(f"Failed to fetch street_name_cleaner.py from GitHub: {e}")
+    raise RuntimeError(f"Failed to fetch street-name-cleaner.py from GitHub: {e}")
 
 # 2. Load the downloaded code into memory
 module_name = "street_name_cleaner"
@@ -259,8 +273,15 @@ class AddressCleaner(DownloadedCleaner):
             # --- ADDITIONAL ADDRESS NUMBER MODIFIERS ---
             AddressNumber_Prefix="",
             AddressNumber_Suffix="",
-            AddressNumber_LowRange="", 
+            AddressNumber_LowRange="",
             AddressNumber_HighRange="",
+            # Alternative to the plain LowRange/HighRange pair above, for
+            # datasets that instead split the address range by side of the
+            # street (e.g. odd addresses on the left, even on the right).
+            AddressNumber_LowRange_Left="",
+            AddressNumber_HighRange_Left="",
+            AddressNumber_LowRange_Right="",
+            AddressNumber_HighRange_Right="",
             
             # --- SECONDARY ADDRESS INFO (Units, Suites, etc.) ---
             AddressSecondaryAddress="",          
@@ -287,8 +308,10 @@ the workspace can authenticate to GitHub (e.g. a token embedded in the URL
 or a network/proxy configuration that already has access) -- a plain
 anonymous `urllib.request.urlopen()` against a private repo's raw URL will
 fail with an HTTP 404. If that's not set up, an equally valid alternative is
-to skip the download step entirely: copy `street_name_cleaner.py` onto the
-FME engine's Python path (or alongside the workspace) and `import
+to skip the download step entirely: copy `street-name-cleaner.py` onto the
+FME engine's Python path (or alongside the workspace), renaming the local
+copy to `street_name_cleaner.py` (Python's `import` statement needs a valid
+identifier, which the hyphenated filename isn't), and `import
 street_name_cleaner` normally in step 2-3 above instead of fetching it from
 GitHub.
 
@@ -391,6 +414,7 @@ the address is assembled from these instead:
 | `AddressNumber` | A single house number. | `2729` | `137` | `5` |
 | `AddressNumber_LowRange` | Low end of an address-number range, in its own column (e.g. a road-centerline segment); used when `AddressNumber` is blank. Not used in any of the three examples. | -- | -- | -- |
 | `AddressNumber_HighRange` | High end of that same range, in a second, separate column. Not used in any of the three examples. | -- | -- | -- |
+| `AddressNumber_LowRange_Left` / `AddressNumber_HighRange_Left` / `AddressNumber_LowRange_Right` / `AddressNumber_HighRange_Right` | An alternative to the plain `AddressNumber_LowRange`/`AddressNumber_HighRange` pair, for a road-centerline dataset that instead splits the address range by side of the street (e.g. odd addresses on the left, even on the right, each with its own low/high). Whichever of these -- along with `AddressNumber`/`AddressNumber_LowRange`/`AddressNumber_HighRange` -- are actually populated are folded into one overall range spanning the lowest to the highest value given; this module tracks a single address number/range per feature, not a separate value per side. Not used in any of the three examples. | -- | -- | -- |
 | `AddressNumber_Prefix` | A letter (or rural camp/lot word like "LOT"/"CABIN") immediately before the number, merged tight per rule 3 (`H` + `5` -> `H5`). | *(none)* | *(none)* | `H` |
 | `AddressNumber_Suffix` | A letter suffix on the number, merged tight the same way (e.g. `A` -> `...28A`), or `1/2` for a half value (kept with a space: `33 1/2`). | *(none)* | *(none)* | *(none)* |
 | `Street_PreDirectional` | e.g. `"E"`. | *(none)* | `E` | *(none)* |
@@ -495,6 +519,7 @@ set" cell:
 | Full address with an embedded unit and a city/state/zip tail | `FullAddress="SITE_ADDRESS"` = `"133 S Burlington St, Apt 4, South Burlington, VT 05403"` | `Clean_SITE_ADDRESS` = `133 SOUTH BURLINGTON STREET, UNIT 4`; `Clean_AddressSecondaryAddress` = `UNIT 4` |
 | Primary + secondary as two combined columns, with an output prefix | `PrimaryAddress="MAIL_PRIMARY"` = `"88 South Hill Rd"`, `AddressSecondaryAddress="MAIL_UNIT"` = `"Ste 2"`, `OutputAttributePrefix="MAIL_STD_"` | `MAIL_STD_MAIL_PRIMARY` = `88 SOUTH HILL ROAD`; `MAIL_STD_MAIL_UNIT` = `UNIT 2`; `MAIL_STD_Street_PostType` = `ROAD` (canonical name, since `Street_PostType` wasn't configured; `MAIL_STD_` replaces the default `Clean_` marker on every attribute, rather than stacking on top of it) |
 | Address-number range (road-centerline segment), building blocks only | `AddressNumber_LowRange="1"`, `AddressNumber_HighRange="5"`, `PrimaryName="NAME"` = `"Main St"` | `Clean_AddressNumber` = `1-5` (canonical, since `AddressNumber` itself wasn't configured); `Clean_NAME` = `MAIN STREET` |
+| Address-number range split by side of the street across four columns | `AddressNumber_LowRange_Left="1"`, `AddressNumber_HighRange_Left="99"`, `AddressNumber_LowRange_Right="2"`, `AddressNumber_HighRange_Right="98"` | `Clean_AddressNumber` = `1-99` (the overall lowest-to-highest span across all four values, not a separate value per side) |
 | Half-value number from a split `AddressNumber` + `AddressNumber_Suffix` | `AddressNumber="NUM"` = `"33"`, `AddressNumber_Suffix="SUF"` = `"1/2"`, `PrimaryName="NAME"` = `"Main St"` | `Clean_NUM` = `33 1/2`; `Clean_NAME` = `MAIN STREET` |
 | Secondary unit from a split abbreviation + range | `AddressSecondaryAbbreviation="Apt"`, `AddressSecondaryNumber_LowRange="1"`, `AddressSecondaryNumber_HighRange="5"` | `Clean_AddressSecondaryAddress` = `UNIT 1-5` (canonical, since `AddressSecondaryAddress` itself wasn't configured) |
 | No address-role parameters set at all | *(nothing)* | `Clean_PrimaryName`, `Clean_StreetName`, `Clean_AddressNumber`, etc. are all present holding `None`; `Clean_FullAddress` / `Clean_PrimaryAddress` don't appear at all -- never an error |
