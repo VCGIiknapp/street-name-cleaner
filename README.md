@@ -394,6 +394,7 @@ naming" below):
 
 - `CLEAN_AddressSecondaryAddress`
 - `CLEAN_Alias`
+- `CLEAN_StatusMessage`
 - `CLEAN_PrimaryName`
 - `CLEAN_StreetName`
 - `CLEAN_Street_PreDirectional`
@@ -434,14 +435,19 @@ A few things that are easy to miss:
   `CLEAN_Street_PostDirectional`, `CLEAN_Street_PostType`) -- all produced
   at once from the same input.
 - **Configuring both the granular fields *and* a combined field at the same
-  time does not create a conflict.** The granular fields win wherever
-  they're populated; the combined field's own auto-parsed segments only
-  show up in the output for whichever of those five segments the granular
-  side left blank on that particular feature -- see "Combining combined and
-  granular fields" below.
+  time is never an error, even when they disagree.** The granular fields
+  always win; the combined field's own auto-parsed segments only show up in
+  the output for whichever of those five segments the granular side left
+  blank on that particular feature. When the two genuinely disagree instead
+  of one just filling a blank in the other, the combined field's discarded
+  value is reported in `CLEAN_StatusMessage` rather than silently vanishing
+  -- see "Combining combined and granular fields" below.
 - `CLEAN_Alias` is produced automatically whenever a highway alias is
   found (see "Highway aliases" below) -- there's no input parameter for it
   to be configured under, so it's easy to overlook.
+- `CLEAN_StatusMessage` is likewise always produced, with no input
+  parameter of its own -- `None` on every feature with no conflict to
+  report, so it's easy to assume it's unused and skip exposing it.
 
 ### Output naming
 
@@ -489,6 +495,20 @@ detected, it's split out into `CLEAN_Alias`, leaving the highway phrase by
 itself in `CLEAN_PrimaryName` / `CLEAN_StreetName` / etc.; otherwise
 `CLEAN_Alias` is `None`. See "Highway aliases" below for exactly what does
 and doesn't qualify as one.
+
+**`CLEAN_StatusMessage` is also always produced, always under its canonical
+name -- there's no input parameter for it to mirror either.** It's `None`
+on nearly every feature. It's only populated when two independently-supplied
+inputs for the *same* segment -- a granular field (`StreetName`,
+`AddressNumber`, `Street_PreDirectional`, `Street_PostDirectional`) and a
+combined one (`FullAddress`/`PrimaryAddress`, or `PrimaryName` in the
+`StreetName`-vs-`PrimaryName` case) -- genuinely disagree, rather than one
+simply filling in a blank the other left. The granular field still wins in
+the output either way; `CLEAN_StatusMessage` exists purely so that the
+combined field's discarded value doesn't vanish without a trace. Trivial
+formatting differences are never reported this way, since conflict
+detection compares the final normalized values, not the raw text -- see
+"Combining combined and granular fields" below for worked examples.
 
 ### Worked examples
 
@@ -677,7 +697,7 @@ is patched in from `FullAddress`:
 
 | Fields set | Result |
 | --- | --- |
-| `FullAddress="FULL"` = `"Lot 43 Horseshoe Circle"`, `AddressNumber="NUM"` = `"Lot 43"`, `StreetName="NAME"` = `"Horseshoe"` | `CLEAN_NUM` = `LOT 43`; `CLEAN_NAME` = `HORSESHOE`; `CLEAN_Street_PostType` = `CIRCLE` (filled in from `FullAddress`, since `Street_PostType` itself was never configured) |
+| `FullAddress="FULL"` = `"Lot 43 Horseshoe Circle"`, `AddressNumber="NUM"` = `"Lot 43"`, `StreetName="NAME"` = `"Horseshoe"` | `CLEAN_NUM` = `LOT 43`; `CLEAN_NAME` = `HORSESHOE`; `CLEAN_Street_PostType` = `CIRCLE` (filled in from `FullAddress`, since `Street_PostType` itself was never configured); `CLEAN_StatusMessage` = `None` (every segment either matched or was a blank filled in, not a real disagreement) |
 
 **Avoiding a double-count:** `FullAddress`'s own address-number parsing
 misfires on a bare `"#"` (it reads `"Lot #4"` as a secondary-unit marker,
@@ -691,6 +711,37 @@ is still filled in from `FullAddress` as normal:
 | Fields set | Result |
 | --- | --- |
 | `FullAddress="FULL"` = `"Lot #4 Cottage Hill Road Lane"`, `AddressNumber="NUM"` = `"Lot #4"`, `StreetName="NAME"` = `"Cottage Hill Road"` | `CLEAN_NUM` = `LOT 4`; `CLEAN_NAME` = `COTTAGE HILL ROAD`; `CLEAN_Street_PostType` = `LANE`; `CLEAN_AddressSecondaryAddress` = `None` (not `UNIT 4`) |
+
+`CLEAN_StatusMessage` is *not* `None` in that last row, though -- `FullAddress`'s
+own parse of `"Lot #4 Cottage Hill Road Lane"` is a known imperfect case (the
+same `"#"` confusion also leaves a stray `"LOT"` stuck onto its own street-name
+reading, `"LOT COTTAGE HILL ROAD"`), which genuinely differs from the clean
+granular `StreetName`. The granular value (`COTTAGE HILL ROAD`, used above) is
+still what wins, but the conflict is reported:
+
+```
+StreetName: kept 'COTTAGE HILL ROAD' from StreetName; discarded conflicting
+'LOT COTTAGE HILL ROAD' from FullAddress -- review for a possible data mismatch.
+```
+
+**Reporting a genuine conflict, not just an imperfect combined-text parse:**
+sometimes the two inputs simply describe the record differently -- e.g. a
+typo, a stale combined-address column, or two source systems that disagree.
+`CLEAN_StatusMessage` reports this the same way:
+
+| Fields set | Result |
+| --- | --- |
+| `FullAddress="FULL"` = `"137 Elm Street"`, `AddressNumber="NUM"` = `"137"`, `StreetName="NAME"` = `"Main"` | `CLEAN_NAME` = `MAIN` (the granular value still wins); `CLEAN_StatusMessage` = `"StreetName: kept 'MAIN' from StreetName; discarded conflicting 'ELM' from FullAddress -- review for a possible data mismatch."` |
+
+This same conflict-detection applies one layer in, too -- between `StreetName`
+and `PrimaryName` (no `FullAddress`/`PrimaryAddress` involved at all), and
+between an explicit `Street_PreDirectional`/`Street_PostDirectional` and
+whatever `PrimaryName` auto-detected on its own for that same segment.
+`Street_PostType` can never produce this kind of conflict: when an explicit
+`Street_PostType` is given, `PrimaryName`'s own trailing word is only ever
+treated as a matching, redundant road type or left alone as part of the name
+(see "A word that's also a valid road type isn't always one" above) -- never
+a differing, discarded value.
 
 ### Other examples
 

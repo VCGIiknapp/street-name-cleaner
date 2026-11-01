@@ -286,7 +286,13 @@ def extract_address_number(text: str) -> tuple[Optional[str], str]:
     # merged in here since that's a directional word, not a unit letter,
     # and neither is a letter that's actually a stand-alone single-letter
     # street name (e.g. "26 G St") -- see `_is_lone_street_name_remainder()`.
-    match = re.match(r"^(\d+)[\s-]?([A-Za-z])\b\s*", body)
+    # The letter must be followed by whitespace or the end of the string, not
+    # just a generic word boundary -- otherwise a street name starting with a
+    # single letter immediately followed by punctuation (e.g. "O'Brien") has
+    # its leading letter mistaken for a suffix merely because an apostrophe
+    # isn't a word character either (e.g. "316 O'Brien Farm Rd" would
+    # otherwise become address number "316O", street name "'BRIEN FARM").
+    match = re.match(r"^(\d+)[\s-]?([A-Za-z])(?=\s|$)\s*", body)
     if (
         match
         and match.group(2).upper() not in PREFIX_DIRECTIONAL_MAP
@@ -955,6 +961,14 @@ def parse_primary_remainder(
 # part of the highway's own name (no road type of their own), so they're
 # left alone rather than split out; `CLEAN_Alias` is None in those cases.
 #
+# When both a granular field (e.g. `StreetName`) and a combined field (e.g.
+# `FullAddress`) are supplied together and genuinely disagree about the same
+# segment -- not just one filling a blank the other left, but an outright
+# conflict -- the granular field still wins, but the combined field's
+# discarded value is reported in an always-on `CLEAN_StatusMessage` output
+# (no dedicated input parameter either), so that disagreement is never
+# silent. `CLEAN_StatusMessage` is None whenever nothing was discarded.
+#
 # This module only standardizes address *numbers* and *street names* -- it
 # never inspects or cleans city, state, or zip/zip+4 values, beyond
 # recognizing and discarding a trailing city/state/zip tail on
@@ -982,6 +996,20 @@ def _build_secondary_from_parts(
     return None
 
 
+def _conflict_note(segment: str, kept_source: str, kept_value: str, discarded_source: str, discarded_value: str) -> str:
+    """Build one human-readable status-message fragment reporting that two
+    independently-supplied inputs disagreed about the same address segment,
+    and one of them was silently discarded rather than surfaced anywhere in
+    the output -- so a reviewer can tell from `CLEAN_StatusMessage` alone
+    that this happened, without having to compare every input field by
+    hand."""
+    return (
+        f"{segment}: kept {kept_value!r} from {kept_source}; discarded "
+        f"conflicting {discarded_value!r} from {discarded_source} -- review "
+        f"for a possible data mismatch."
+    )
+
+
 def _build_primary_from_parts(
     primary_name: str,
     street_name: str,
@@ -997,7 +1025,7 @@ def _build_primary_from_parts(
     street_pre_directional: str,
     street_post_directional: str,
     street_post_type: str,
-) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
+) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str], Optional[str], List[str]]:
     """Build the five primary-address segments from whichever granular
     fields are available. `PrimaryName`, if given, is always parsed the same
     way a combined string would be -- picking up its own prefix directional,
@@ -1031,8 +1059,17 @@ def _build_primary_from_parts(
     number/range per segment, not separate per-side output.
 
     Returns (address_number, prefix_directional, street_name, road_type,
-    suffix_directional, alias); any that have no corresponding input are
-    None."""
+    suffix_directional, alias, notes); any of the first six that have no
+    corresponding input are None. `notes` is a list of human-readable
+    strings, one per segment where `StreetName`/`Street_PreDirectional`/
+    `Street_PostDirectional` was given *and* `PrimaryName` independently
+    parsed a genuinely different (not just blank) value for that same
+    segment -- i.e. real conflicting data was supplied, not just one field
+    filling in for a blank, so the losing value was silently discarded
+    rather than ever appearing in the output. (`Street_PostType` can't
+    produce this kind of conflict: `parse_primary_remainder()` only ever
+    auto-detects a road type that either matches the explicit one or is
+    None, by construction, so there's nothing to discard.)"""
     base_number = normalize_address_number_token(address_number) if address_number else combine_number_range(
         address_number_low, address_number_high,
         address_number_low_left, address_number_high_left,
@@ -1049,11 +1086,33 @@ def _build_primary_from_parts(
             primary_name, known_road_type=explicit_road_type, known_suffix_directional=explicit_suffix_dir
         )
 
-    name = normalize_street_name(street_name) or auto_name
-    prefix_dir = normalize_prefix_directional(street_pre_directional) or auto_prefix_dir
+    notes: List[str] = []
+
+    name = normalize_street_name(street_name)
+    if name and auto_name and auto_name != name:
+        notes.append(_conflict_note("StreetName", "StreetName", name, "PrimaryName", auto_name))
+    if name is None:
+        name = auto_name
+
+    prefix_dir = normalize_prefix_directional(street_pre_directional)
+    if prefix_dir and auto_prefix_dir and auto_prefix_dir != prefix_dir:
+        notes.append(_conflict_note(
+            "Street_PreDirectional", "Street_PreDirectional", prefix_dir, "PrimaryName", auto_prefix_dir
+        ))
+    if prefix_dir is None:
+        prefix_dir = auto_prefix_dir
+
     road_type = explicit_road_type or auto_road_type
-    suffix_dir = explicit_suffix_dir or auto_suffix_dir
-    return number, prefix_dir, name, road_type, suffix_dir, alias
+
+    suffix_dir = explicit_suffix_dir
+    if explicit_suffix_dir and auto_suffix_dir and auto_suffix_dir != explicit_suffix_dir:
+        notes.append(_conflict_note(
+            "Street_PostDirectional", "Street_PostDirectional", explicit_suffix_dir, "PrimaryName", auto_suffix_dir
+        ))
+    if suffix_dir is None:
+        suffix_dir = auto_suffix_dir
+
+    return number, prefix_dir, name, road_type, suffix_dir, alias, notes
 
 
 def standardize_feature_attributes(
@@ -1166,6 +1225,18 @@ def standardize_feature_attributes(
     (no dedicated input parameter of its own), leaving the highway phrase
     alone in `CLEAN_PrimaryName` / `CLEAN_StreetName` / etc.
 
+    `CLEAN_StatusMessage` is also always produced (again with no dedicated
+    input parameter). It's `None` unless a granular field (`StreetName`,
+    `AddressNumber`, `Street_PreDirectional`, `Street_PostDirectional`, or
+    the auto-detected alias) and a combined field (`FullAddress`/
+    `PrimaryAddress`, or `PrimaryName` for the granular-vs-`PrimaryName`
+    comparison) were both supplied *and* genuinely disagreed about that same
+    segment -- not just one of them filling in a blank the other left. The
+    granular field still wins in the output either way, but the combined
+    field's discarded value is named in `CLEAN_StatusMessage` so that
+    disagreement is surfaced for manual review instead of vanishing
+    silently. Multiple conflicts on the same feature are joined with `"; "`.
+
     Every output attribute name is marked with a `CLEAN_` prefix by default;
     if `OutputAttributePrefix` is set, it replaces that default marker
     entirely (it never stacks on top of it), ready to be merged back onto
@@ -1182,7 +1253,7 @@ def standardize_feature_attributes(
         _get(AddressSecondaryNumber_HighRange),
     )
 
-    number, prefix_dir, name, road_type, suffix_dir, alias = _build_primary_from_parts(
+    number, prefix_dir, name, road_type, suffix_dir, alias, notes = _build_primary_from_parts(
         _get(PrimaryName), _get(StreetName),
         _get(AddressNumber), _get(AddressNumber_LowRange), _get(AddressNumber_HighRange),
         _get(AddressNumber_LowRange_Left), _get(AddressNumber_HighRange_Left),
@@ -1192,22 +1263,39 @@ def standardize_feature_attributes(
     )
 
     if FullAddress.strip() or PrimaryAddress.strip():
+        combined_label = "FullAddress" if FullAddress.strip() else "PrimaryAddress"
         combined = _get(FullAddress) or _get(PrimaryAddress)
         blended_text = strip_city_state_zip(clean_whitespace(combined.upper().replace(".", "")))
         segments = standardize_address(blended_text)["parsed_segments"]
+
         # The granular fields above are the more authoritative signal (a
         # caller that bothered to split them out already knows their exact
         # roles, with no guesswork) -- so they win wherever supplied.
         # FullAddress/PrimaryAddress only fills in whichever segments the
         # granular fields left blank, e.g. a road type that's present in the
         # combined text but was stripped out of a bare StreetName column
-        # with nowhere else to go.
-        number = number or segments["address_number"]
-        prefix_dir = prefix_dir or segments["prefix_directional"]
-        name = name or segments["street_name"]
-        road_type = road_type or segments["road_type"]
-        suffix_dir = suffix_dir or segments["suffix_directional"]
-        alias = alias or segments["alias"]
+        # with nowhere else to go. When a granular field's value and
+        # FullAddress/PrimaryAddress's own auto-parse for that same segment
+        # are both present but genuinely differ (not just one filling a
+        # blank), the combined text's conflicting value is discarded -- and
+        # noted, so that's never silent.
+        def _granular_wins(label, granular_value, combined_value):
+            if granular_value and combined_value and granular_value != combined_value:
+                notes.append(_conflict_note(label, label, granular_value, combined_label, combined_value))
+            return granular_value or combined_value
+
+        number = _granular_wins("AddressNumber", number, segments["address_number"])
+        prefix_dir = _granular_wins("Street_PreDirectional", prefix_dir, segments["prefix_directional"])
+        name = _granular_wins("StreetName", name, segments["street_name"])
+        road_type = _granular_wins("Street_PostType", road_type, segments["road_type"])
+        suffix_dir = _granular_wins("Street_PostDirectional", suffix_dir, segments["suffix_directional"])
+        alias = _granular_wins("Alias", alias, segments["alias"])
+
+        if secondary_address and segments["secondary_address"] and secondary_address != segments["secondary_address"]:
+            notes.append(_conflict_note(
+                "AddressSecondaryAddress", "AddressSecondaryAddress", secondary_address,
+                combined_label, segments["secondary_address"],
+            ))
         # Only trust the combined text's own secondary/unit split when its
         # own address-number parse also succeeded. A "#" (e.g. "Lot #4") is
         # ambiguous standalone -- the combined parse reads it as a secondary
@@ -1218,6 +1306,8 @@ def standardize_feature_attributes(
         # double-count it as both the house number and a separate unit.
         if secondary_address is None and segments["address_number"] is not None:
             secondary_address = segments["secondary_address"]
+
+    status_message = "; ".join(notes) if notes else None
 
     name_only = " ".join(part for part in (prefix_dir, name, road_type, suffix_dir) if part) or None
     primary_address = " ".join(part for part in (number, prefix_dir, name, road_type, suffix_dir) if part) or None
@@ -1243,6 +1333,7 @@ def standardize_feature_attributes(
     emit(Street_PostType, "Street_PostType", road_type)
     emit(AddressSecondaryAddress, "AddressSecondaryAddress", secondary_address)
     emit("", "Alias", alias)
+    emit("", "StatusMessage", status_message)
 
     # Unlike the always-on segments above, these modifier/range columns only
     # get their own output when actually configured -- there's no canonical
@@ -1434,6 +1525,8 @@ if __name__ == "__main__":
          "33-35 BRIGHT STREET"),
         ("6A-6D Lake Street",
          "6A-6D LAKE STREET"),
+        ("316 O'Brien Farm Road",
+         "316 O'BRIEN FARM ROAD"),
     ]
 
     for raw, expected_full in cases:
@@ -1901,6 +1994,9 @@ if __name__ == "__main__":
     assert out["CLEAN_NUM"] == "LOT 43"
     assert out["CLEAN_NAME"] == "HORSESHOE"
     assert out["CLEAN_Street_PostType"] == "CIRCLE"
+    # Gap-filling, not a conflict (StreetName never had a road type to
+    # disagree about) -> no status message.
+    assert out["CLEAN_StatusMessage"] is None
 
     # Same combination, but where the combined text's own address-number
     # parsing would otherwise misfire (the "#" in "Lot #4" is ordinarily
@@ -1923,6 +2019,45 @@ if __name__ == "__main__":
     # secondary-address reading is discarded rather than double-counting
     # the same "4" as both the house number and a separate unit.
     assert out["CLEAN_AddressSecondaryAddress"] is None
+    # FullAddress's own parse of this string is a known imperfect case (the
+    # "#" confusion above also leaves a stray "LOT" stuck onto its own
+    # street-name reading, "LOT COTTAGE HILL ROAD") -- which genuinely
+    # differs from the clean granular StreetName, so that mismatch is
+    # correctly surfaced here too, even though the granular value (used in
+    # CLEAN_NAME above) is the one that's actually correct.
+    assert out["CLEAN_StatusMessage"] == (
+        "StreetName: kept 'COTTAGE HILL ROAD' from StreetName; discarded "
+        "conflicting 'LOT COTTAGE HILL ROAD' from FullAddress -- review for "
+        "a possible data mismatch."
+    )
+
+    # Genuine conflict: the granular StreetName and FullAddress's own
+    # auto-parsed street name disagree outright (not just one filling a gap
+    # in the other) -- the granular value still wins, but the combined
+    # text's differing value is reported in CLEAN_StatusMessage instead of
+    # vanishing silently.
+    out = standardize_feature_attributes(
+        {"FULL": "137 Elm Street", "NUM": "137", "NAME": "Main"},
+        FullAddress="FULL", AddressNumber="NUM", StreetName="NAME",
+    )
+    assert out["CLEAN_NAME"] == "MAIN"
+    assert out["CLEAN_StatusMessage"] == (
+        "StreetName: kept 'MAIN' from StreetName; discarded conflicting "
+        "'ELM' from FullAddress -- review for a possible data mismatch."
+    )
+
+    # Same kind of conflict, one layer in: StreetName and PrimaryName
+    # disagree about the bare name portion (no FullAddress/PrimaryAddress
+    # involved at all here).
+    out = standardize_feature_attributes(
+        {"FULL2": "E Main St", "BARE": "Elm"},
+        PrimaryName="FULL2", StreetName="BARE",
+    )
+    assert out["CLEAN_BARE"] == "ELM"
+    assert out["CLEAN_StatusMessage"] == (
+        "StreetName: kept 'ELM' from StreetName; discarded conflicting "
+        "'MAIN' from PrimaryName -- review for a possible data mismatch."
+    )
 
     # No address-role attributes configured at all -> graceful empty
     # result, never an error (no combination is a strict requirement).
@@ -1935,5 +2070,6 @@ if __name__ == "__main__":
     assert out["CLEAN_AddressNumber"] is None
     assert out["CLEAN_AddressSecondaryAddress"] is None
     assert out["CLEAN_Alias"] is None
+    assert out["CLEAN_StatusMessage"] is None
 
     print("\nAll assertions passed.")
