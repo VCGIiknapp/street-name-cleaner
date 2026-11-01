@@ -29,17 +29,28 @@ class AddressCleaner(DownloadedCleaner):
         ===========================================================================
         SET YOUR COLUMN NAMES HERE
         ===========================================================================
-        Map your FME attribute names (as strings) to the parameters below. 
+        Map your FME attribute names (as strings) to the parameters below.
         Leave the string empty ("") for any attributes you don't have.
-        
-        PERFORMANCE & ACCURACY NOTES:
-        - TIER 1 (Best): Provide `AddressNumber` + `PrimaryName`.
-        - TIER 2 (Good): Provide `AddressNumber` + Subparts (`StreetName`, 
-                         `Street_PreDirectional`, etc.).
-        - TIER 3 (Least Preferred): Provide `PrimaryAddress` or `FullAddress`. 
-                         This forces the script to parse the string and make 
-                         assumptions that may be incorrect.
-                         
+
+        HOW THESE ARE COMBINED (decided per feature, not per workspace):
+        The GRANULAR fields below (AddressNumber, PrimaryName/StreetName,
+        Street_PreDirectional, Street_PostDirectional, Street_PostType) are
+        always used first, wherever you've populated them -- they're the more
+        authoritative signal, since there's no guesswork left once a role is
+        already split into its own column. FullAddress/PrimaryAddress is only
+        used to fill in whichever of those segments the granular fields left
+        blank for that particular feature (e.g. a road type that's present in
+        the combined text but missing from a bare StreetName column with
+        nowhere else to put it).
+
+        That means it's safe -- and usually worth it -- to configure BOTH a
+        combined column and the granular fields at the same time, even if
+        neither is complete on its own for every record: each feature gets
+        whichever pieces its own granular fields have, with the combined
+        column automatically patching in anything still missing on that same
+        feature. If you only have one or the other, that's fine too --
+        configure just what you have and leave the rest blank.
+
         EXAMPLE OF ADDRESS PARTS:
         FullAddress:             "137 E Main St, Hyde Park, VT 05655"
         PrimaryAddress:          "137 E Main St"
@@ -52,27 +63,28 @@ class AddressCleaner(DownloadedCleaner):
         ===========================================================================
         """
         super().__init__(
-            # --- TIER 1: MOST EFFICIENT ---
+            # --- GRANULAR FIELDS: used first, wherever populated ---
             # Best if you have the number and the full street name already separated.
             # You must use both AddressNumber and PrimaryName together.
-            AddressNumber="", 
-            PrimaryName="", 
-            
-            # --- TIER 2: ALTERNATIVE EFFICIENT ---
+            AddressNumber="",
+            PrimaryName="",
+
             # Use these if you don't have PrimaryName, but have the street parts.
-            # You must use AddressNumber and all of the tier 2 columns together
+            # You must use AddressNumber and all of these columns together
             # (if there's no PrimaryName).
-            StreetName="", 
-            Street_PreDirectional="",            
+            StreetName="",
+            Street_PreDirectional="",
             Street_PostDirectional="",
-            Street_PostType="",                  
-            
-            # --- TIER 3: LEAST PREFERRED (Forces script parsing) ---
-            # Use only if your data is unsegmented and the previous 2 tiers can't be completed.
-            # You only need to provide either PrimaryAddress or FullAddress, not both.
-            PrimaryAddress="",                   
-            FullAddress="",                      
-            
+            Street_PostType="",
+
+            # --- COMBINED FIELDS: fill in whatever the granular fields above left blank ---
+            # Safe to set alongside the granular fields above -- only patches
+            # gaps on a feature-by-feature basis, never overrides a granular
+            # field that's already populated. You only need to provide either
+            # PrimaryAddress or FullAddress, not both.
+            PrimaryAddress="",
+            FullAddress="",
+
             # --- ADDITIONAL ADDRESS NUMBER MODIFIERS ---
             # If your dataset provides address number modifiers as separate columns,
             # you can provide them here.
@@ -93,7 +105,15 @@ class AddressCleaner(DownloadedCleaner):
             AddressNumber_HighRange_Right="",
 
             # --- SECONDARY ADDRESS INFO (Units, Suites, etc.) ---
-            AddressSecondaryAddress="",          
+            # Same granular-first, combined-fills-gaps rule applies here: if
+            # these are blank, a secondary/unit address embedded in
+            # FullAddress/PrimaryAddress (e.g. "Apt 4") is still picked up
+            # automatically -- unless that combined text also failed to find
+            # an address number on its own, in which case its secondary-unit
+            # reading is untrustworthy too (e.g. a "#" that's actually part
+            # of a lot number, not a unit) and is skipped rather than risk
+            # double-counting the same digits.
+            AddressSecondaryAddress="",
             AddressSecondaryAbbreviation="",
             # If your dataset does not provide a single AddressSecondaryNumber, but instead presents data as a
             # two-column range of secondary address numbers, you can provide them here.

@@ -230,17 +230,28 @@ class AddressCleaner(DownloadedCleaner):
         ===========================================================================
         SET YOUR COLUMN NAMES HERE
         ===========================================================================
-        Map your FME attribute names (as strings) to the parameters below. 
+        Map your FME attribute names (as strings) to the parameters below.
         Leave the string empty ("") for any attributes you don't have.
-        
-        PERFORMANCE & ACCURACY NOTES:
-        - TIER 1 (Best): Provide `AddressNumber` + `PrimaryName`.
-        - TIER 2 (Good): Provide `AddressNumber` + Subparts (`StreetName`, 
-                         `Street_PreDirectional`, etc.).
-        - TIER 3 (Least Preferred): Provide `PrimaryAddress` or `FullAddress`. 
-                         This forces the script to parse the string and make 
-                         assumptions that may be incorrect.
-                         
+
+        HOW THESE ARE COMBINED (decided per feature, not per workspace):
+        The GRANULAR fields below (AddressNumber, PrimaryName/StreetName,
+        Street_PreDirectional, Street_PostDirectional, Street_PostType) are
+        always used first, wherever you've populated them -- they're the more
+        authoritative signal, since there's no guesswork left once a role is
+        already split into its own column. FullAddress/PrimaryAddress is only
+        used to fill in whichever of those segments the granular fields left
+        blank for that particular feature (e.g. a road type that's present in
+        the combined text but missing from a bare StreetName column with
+        nowhere else to put it).
+
+        That means it's safe -- and usually worth it -- to configure BOTH a
+        combined column and the granular fields at the same time, even if
+        neither is complete on its own for every record: each feature gets
+        whichever pieces its own granular fields have, with the combined
+        column automatically patching in anything still missing on that same
+        feature. If you only have one or the other, that's fine too --
+        configure just what you have and leave the rest blank.
+
         EXAMPLE OF ADDRESS PARTS:
         FullAddress:             "137 E Main St, Hyde Park, VT 05655"
         PrimaryAddress:          "137 E Main St"
@@ -253,22 +264,23 @@ class AddressCleaner(DownloadedCleaner):
         ===========================================================================
         """
         super().__init__(
-            # --- TIER 1: MOST EFFICIENT ---
+            # --- GRANULAR FIELDS: used first, wherever populated ---
             # Best if you have the number and the full street name already separated.
-            AddressNumber="", 
-            PrimaryName="", 
-            
-            # --- TIER 2: ALTERNATIVE EFFICIENT ---
+            AddressNumber="",
+            PrimaryName="",
+
             # Use these if you don't have PrimaryName, but have the street parts.
-            StreetName="", 
-            Street_PreDirectional="",            
+            StreetName="",
+            Street_PreDirectional="",
             Street_PostDirectional="",
-            Street_PostType="",                  
-            
-            # --- TIER 3: LEAST PREFERRED (Forces script parsing) ---
-            # Use only if your data is unsegmented.
-            PrimaryAddress="",                   
-            FullAddress="",                      
+            Street_PostType="",
+
+            # --- COMBINED FIELDS: fill in whatever the granular fields above left blank ---
+            # Safe to set alongside the granular fields above -- only patches
+            # gaps on a feature-by-feature basis, never overrides a granular
+            # field that's already populated.
+            PrimaryAddress="",
+            FullAddress="",
             
             # --- ADDITIONAL ADDRESS NUMBER MODIFIERS ---
             AddressNumber_Prefix="",
@@ -284,7 +296,15 @@ class AddressCleaner(DownloadedCleaner):
             AddressNumber_HighRange_Right="",
             
             # --- SECONDARY ADDRESS INFO (Units, Suites, etc.) ---
-            AddressSecondaryAddress="",          
+            # Same granular-first, combined-fills-gaps rule applies here: if
+            # these are blank, a secondary/unit address embedded in
+            # FullAddress/PrimaryAddress (e.g. "Apt 4") is still picked up
+            # automatically -- unless that combined text also failed to find
+            # an address number on its own, in which case its secondary-unit
+            # reading is untrustworthy too (e.g. a "#" that's actually part
+            # of a lot number, not a unit) and is skipped rather than risk
+            # double-counting the same digits.
+            AddressSecondaryAddress="",
             AddressSecondaryAbbreviation="",
             AddressSecondaryNumber_LowRange="",
             AddressSecondaryNumber_HighRange="",
@@ -335,15 +355,16 @@ the specific `CLEAN_` attribute names you want to use further downstream
 (see "Output naming" below for exactly how each one is named).
 
 New attributes can show up even when you didn't directly configure the
-role that produced them (see the Tier 2 and combined-input notes below),
-so the safest approach is to expose everything in both lists below up
-front, run the workspace once, and then remove whichever ones you confirm
-are always empty for your particular feature type -- rather than trying to
-predict up front exactly which ones will have data.
+role that produced them (see the granular building-block and combined-input
+notes below), so the safest approach is to expose everything in both lists
+below up front, run the workspace once, and then remove whichever ones you
+confirm are always empty for your particular feature type -- rather than
+trying to predict up front exactly which ones will have data.
 
-**Always expose these**, regardless of which input tier you used (canonical
-names shown; each one may instead be named `CLEAN_<your column>` if you
-directly configured that role -- see "Output naming" below):
+**Always expose these**, regardless of which inputs you configured or how
+you combined them (canonical names shown; each one may instead be named
+`CLEAN_<your column>` if you directly configured that role -- see "Output
+naming" below):
 
 - `CLEAN_AddressSecondaryAddress`
 - `CLEAN_Alias`
@@ -374,7 +395,7 @@ their own:
 
 A few things that are easy to miss:
 
-- **The Tier 2 building-block route still produces a constructed
+- **The granular building-block route still produces a constructed
   `CLEAN_PrimaryName`.** Even if you never configured `PrimaryName` at all
   -- only `StreetName` / `Street_PreDirectional` / `Street_PostDirectional`
   / `Street_PostType` -- the output still includes both the individual
@@ -386,6 +407,12 @@ A few things that are easy to miss:
   `CLEAN_AddressNumber`, `CLEAN_Street_PreDirectional`,
   `CLEAN_Street_PostDirectional`, `CLEAN_Street_PostType`) -- all produced
   at once from the same input.
+- **Configuring both the granular fields *and* a combined field at the same
+  time does not create a conflict.** The granular fields win wherever
+  they're populated; the combined field's own auto-parsed segments only
+  show up in the output for whichever of those five segments the granular
+  side left blank on that particular feature -- see "Combining combined and
+  granular fields" below.
 - `CLEAN_Alias` is produced automatically whenever a highway alias is
   found (see "Highway aliases" below) -- there's no input parameter for it
   to be configured under, so it's easy to overlook.
@@ -397,8 +424,8 @@ that role, with `CLEAN_` prepended -- e.g. `PrimaryName="STREET_NAME"`
 produces an output attribute called `CLEAN_STREET_NAME`. There's no fixed,
 generic schema to memorize; the output is named after *your* columns.
 
-**The full breakdown is always produced, regardless of which tier of input
-you used.** Supply a combined `FullAddress`, `PrimaryAddress`, or
+**The full breakdown is always produced, regardless of which inputs you
+configured or how you combined them.** Supply a combined `FullAddress`, `PrimaryAddress`, or
 `PrimaryName` and you still get the individual pieces back
 (`CLEAN_AddressNumber`, `CLEAN_Street_PreDirectional`, `CLEAN_StreetName`,
 `CLEAN_Street_PostType`, `CLEAN_Street_PostDirectional`) -- parsed out
@@ -450,7 +477,7 @@ All three clean to the same combined result: `2729 VT ROUTE 114 S`, `137
 EAST MAIN STREET`, and `H5 STONEHEDGE DRIVE`, respectively -- and in every
 case, the full segment breakdown is available too:
 
-| Example | Combined result (`CLEAN_FullAddress` / `CLEAN_PrimaryAddress` / configured `PrimaryName` output, whichever tier was used) | `CLEAN_AddressNumber` | `CLEAN_Street_PreDirectional` | `CLEAN_StreetName` | `CLEAN_Street_PostType` | `CLEAN_Street_PostDirectional` |
+| Example | Combined result (`CLEAN_FullAddress` / `CLEAN_PrimaryAddress` / configured `PrimaryName` output, whichever input was used) | `CLEAN_AddressNumber` | `CLEAN_Street_PreDirectional` | `CLEAN_StreetName` | `CLEAN_Street_PostType` | `CLEAN_Street_PostDirectional` |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `2729 VT ROUTE 114 S` | `2729` | *(none)* | `VT ROUTE 114` | *(none)* | `S` |
 | 2 | `137 EAST MAIN STREET` | `137` | `EAST` | `MAIN` | `STREET` | *(none)* |
@@ -459,21 +486,15 @@ case, the full segment breakdown is available too:
 This full breakdown comes back whether you configured `FullAddress`,
 `PrimaryAddress`, or `PrimaryName` -- or, in reverse, whether you configured
 only the granular fields and let a `CLEAN_PrimaryName` be constructed from
-them.
+them. See "Combining combined and granular fields" below for what happens
+when both are configured at once.
 
 ### Parameters, in order
 
-**Tier 1 -- one combined field.** If either of these is available, use it;
-`FullAddress` takes priority over `PrimaryAddress`, and every field below is
-ignored.
-
-| Parameter | Meaning | Example 1 | Example 2 | Example 3 |
-| --- | --- | --- | --- | --- |
-| `FullAddress` | A full/combined address string that may still carry a trailing city/state/zip. That tail is recognized and dropped automatically -- this module never otherwise touches city/state/zip. | `2729 VT Route 114 S, Norton, VT 05907` | `137 E Main St, Hyde Park, VT 05655` | `H 5 Stonehedge Dr, South Burlington, VT 05403` |
-| `PrimaryAddress` | A combined primary (street) address with no city/state/zip. Used when `FullAddress` is blank. | `2729 VT route 114 S` | `137 E Main St` | `H 5 Stonehedge Drive` |
-
-**Tier 2 -- building-block fields.** If neither field above is available,
-the address is assembled from these instead:
+**Granular fields -- used first, wherever populated.** A caller that already
+split a role out into its own column has no guesswork left to resolve, so
+these always take priority over whatever `FullAddress`/`PrimaryAddress`
+below would otherwise auto-parse for the same segment:
 
 | Parameter | Meaning | Example 1 | Example 2 | Example 3 |
 | --- | --- | --- | --- | --- |
@@ -507,6 +528,23 @@ parsing detected on its own -- so example 2's `PrimaryName` of `"E Main St"`
 together with its own `Street_PreDirectional` of `"E"` and `Street_PostType`
 of `"St"` is handled exactly the same as if `PrimaryName` had just been the
 bare word `"Main"`.
+
+**Combined fields -- fill in whatever the granular fields above left blank,
+feature by feature.** `FullAddress` takes priority over `PrimaryAddress` if
+both are given. These are never required -- the granular fields above are
+enough on their own -- but configuring one alongside the granular fields
+costs nothing and lets a gap in one record's granular data (e.g. a
+`StreetName` column with its road type already stripped out, and nowhere
+else to put it) get silently patched from the combined text instead of
+coming back blank:
+
+| Parameter | Meaning | Example 1 | Example 2 | Example 3 |
+| --- | --- | --- | --- | --- |
+| `FullAddress` | A full/combined address string that may still carry a trailing city/state/zip. That tail is recognized and dropped automatically -- this module never otherwise touches city/state/zip. | `2729 VT Route 114 S, Norton, VT 05907` | `137 E Main St, Hyde Park, VT 05655` | `H 5 Stonehedge Dr, South Burlington, VT 05403` |
+| `PrimaryAddress` | A combined primary (street) address with no city/state/zip. Used when `FullAddress` is blank. | `2729 VT route 114 S` | `137 E Main St` | `H 5 Stonehedge Drive` |
+
+See "Combining combined and granular fields" below for a worked example of
+the gap-filling in action.
 
 **A word that's also a valid road type isn't always one.** Words like
 "Hill", "Lake", and "Mill" are legitimate road types on their own (e.g.
@@ -572,6 +610,16 @@ secondary unit, so see the "Other examples" table below instead.
 | `AddressSecondaryNumber_LowRange` | Low end of a secondary-unit number range, in its own column; used when `AddressSecondaryAddress` is blank. |
 | `AddressSecondaryNumber_HighRange` | High end of that same range, in a second, separate column. |
 
+If none of the three above are populated, a secondary/unit address embedded
+in `FullAddress`/`PrimaryAddress` (e.g. the `", Apt 4"` in a full mailing
+address) still fills `CLEAN_AddressSecondaryAddress` automatically -- with
+one exception: if that combined text's own address-number parsing *also*
+came back empty (which happens when a `"#"` gets misread as a secondary-unit
+marker instead of part of the number, e.g. `"Lot #4"`), its secondary-unit
+reading is discarded instead of used, since trusting it would double-count
+the same digit as both part of the granular `AddressNumber` and a separate
+unit. See "Combining combined and granular fields" below.
+
 **Output.**
 
 | Parameter | Meaning |
@@ -587,6 +635,36 @@ A feature type with none of these configured simply yields an empty result
 `CLEAN_AddressSecondaryAddress` are always produced, named after whatever
 you configured for that role (or their own canonical name if you didn't);
 `CLEAN_Alias` is always produced too, always under its own canonical name.
+
+### Combining combined and granular fields
+
+Both examples below are taken directly from the module's self-test suite
+(`python street-name-cleaner.py`). A feature type can configure `AddressNumber`
++ `StreetName` *and* `FullAddress` (or `PrimaryAddress`) at the same time --
+useful when neither input is complete on its own for every record, e.g. a
+source system with a bare-name street column (road type already stripped
+out) alongside a messier combined address column that still has it.
+
+**Gap-filling:** the granular `AddressNumber`/`StreetName` win for the
+segments they cover, and the road type -- missing from the granular side --
+is patched in from `FullAddress`:
+
+| Fields set | Result |
+| --- | --- |
+| `FullAddress="FULL"` = `"Lot 43 Horseshoe Circle"`, `AddressNumber="NUM"` = `"Lot 43"`, `StreetName="NAME"` = `"Horseshoe"` | `CLEAN_NUM` = `LOT 43`; `CLEAN_NAME` = `HORSESHOE`; `CLEAN_Street_PostType` = `CIRCLE` (filled in from `FullAddress`, since `Street_PostType` itself was never configured) |
+
+**Avoiding a double-count:** `FullAddress`'s own address-number parsing
+misfires on a bare `"#"` (it reads `"Lot #4"` as a secondary-unit marker,
+losing the house number entirely from its own parse) -- but the granular
+`AddressNumber` still wins, and because the combined parse's own number came
+back empty, its "UNIT 4" secondary-address reading is recognized as
+untrustworthy and dropped too, rather than tacking on a phantom unit for the
+same digit the granular `AddressNumber` already accounted for. The road type
+is still filled in from `FullAddress` as normal:
+
+| Fields set | Result |
+| --- | --- |
+| `FullAddress="FULL"` = `"Lot #4 Cottage Hill Road Lane"`, `AddressNumber="NUM"` = `"Lot #4"`, `StreetName="NAME"` = `"Cottage Hill Road"` | `CLEAN_NUM` = `LOT 4`; `CLEAN_NAME` = `COTTAGE HILL ROAD`; `CLEAN_Street_PostType` = `LANE`; `CLEAN_AddressSecondaryAddress` = `None` (not `UNIT 4`) |
 
 ### Other examples
 

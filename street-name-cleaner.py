@@ -701,25 +701,34 @@ def normalize_secondary_abbreviation(value: str) -> Optional[str]:
 
 
 def normalize_address_number_token(value: str) -> Optional[str]:
-    """Apply the half-value / alphanumeric formatting rules (rule 3) to a
-    single, already-isolated address-number value (no surrounding street
-    text), e.g. for a source system that stores the house number in its own
-    column."""
+    """Apply the half-value / alphanumeric / camp-lot-prefix formatting
+    rules (rule 3) to a single, already-isolated address-number value (no
+    surrounding street text), e.g. for a source system that stores the
+    house number in its own column. A stray "#" (e.g. "LOT #4") is treated
+    as a separator and dropped, same as the whitespace it stands in for;
+    a leading camp/lot-style prefix word or single letter (e.g. "LOT 43",
+    "H 5") is merged onto the number the same way `extract_address_number()`
+    does for a combined address string."""
     if not value:
         return None
     token = clean_whitespace(_fix_fraction_spacing(str(value).strip().upper().replace(".", "")))
+    token = clean_whitespace(token.replace("#", " "))
     if not token:
         return None
 
-    match = re.match(r"^(\d+)\s+(\d+/\d+)$", token)
+    prefix_match = _ADDRESS_NUMBER_PREFIX_RE.match(token)
+    prefix = prefix_match.group(0).strip() if prefix_match else ""
+    body = token[prefix_match.end():] if prefix_match else token
+
+    match = re.match(r"^(\d+)\s+(\d+/\d+)$", body)
     if match:
-        return f"{match.group(1)} {match.group(2)}"
+        return _merge_address_number_parts(prefix, f"{match.group(1)} {match.group(2)}", "")
 
-    match = re.match(r"^(\d+)[\s-]?([A-Za-z])$", token)
+    match = re.match(r"^(\d+)[\s-]?([A-Za-z])$", body)
     if match and match.group(2).upper() not in PREFIX_DIRECTIONAL_MAP:
-        return f"{match.group(1)}{match.group(2).upper()}"
+        return _merge_address_number_parts(prefix, match.group(1), match.group(2))
 
-    return token
+    return _merge_address_number_parts(prefix, body, "") if prefix else body
 
 
 def combine_number_range(*values: str) -> Optional[str]:
@@ -835,8 +844,13 @@ def parse_primary_remainder(
 #                             |                        |  05655"          |  VT 05403"
 #   PrimaryAddress            | "2729 VT route 114 S"  | "137 E Main St"  | "H 5 Stonehedge Drive"
 #
-#   If FullAddress/PrimaryAddress aren't available in full, the address is
-#   built from these individual fields instead:
+#   Whether or not FullAddress/PrimaryAddress is available, the address can
+#   also be built from these individual fields -- and when both are
+#   supplied together, the individual fields win wherever they're populated
+#   (no guesswork needed for a role a caller already split out), with
+#   FullAddress/PrimaryAddress only filling in whichever of the segments
+#   below the individual fields left blank (e.g. a road type that's present
+#   in the combined text but missing from a bare StreetName column):
 #
 #   PrimaryName               | "VT Route 114 S"       | "E Main St"      | "Stonehedge Drive"
 #   StreetName                | (alternative to PrimaryName, when the bare
@@ -1066,6 +1080,24 @@ def standardize_feature_attributes(
     Each parameter names one of those existing attributes; pass "" for
     whichever role doesn't apply to this feature type.
 
+    `FullAddress`/`PrimaryAddress` and the granular fields (`PrimaryName`,
+    `StreetName`, `AddressNumber`, `Street_PreDirectional`,
+    `Street_PostDirectional`, `Street_PostType`, ...) are not mutually
+    exclusive -- a feature type can supply both, e.g. a combined address
+    column alongside a separately-split number/name pair sourced from
+    somewhere else. When both are given, each of the five primary-address
+    segments (address number, prefix directional, street name, road type,
+    suffix directional) is taken from the granular fields first -- they're
+    the more authoritative signal, since a caller that already split a role
+    out into its own column has no guesswork left to resolve -- and only
+    falls back to whatever `standardize_address()` auto-parses from
+    `FullAddress`/`PrimaryAddress` for whichever of those five segments the
+    granular fields left blank. The most common case: a `StreetName` column
+    that holds the bare name with its road type already stripped out (e.g.
+    "Horseshoe" from "Horseshoe Circle") and nowhere else to put it --
+    `Street_PostType` is still blank, so that gap is filled in from the
+    combined column, which still has "Circle" to offer.
+
     The output mirrors the input: for every role parameter that was given an
     attribute name, the output includes a `CLEAN_<that name>` attribute
     holding the cleaned value for that same role (e.g. `PrimaryName="STREET"`
@@ -1139,25 +1171,42 @@ def standardize_feature_attributes(
         _get(AddressSecondaryNumber_HighRange),
     )
 
+    number, prefix_dir, name, road_type, suffix_dir, alias = _build_primary_from_parts(
+        _get(PrimaryName), _get(StreetName),
+        _get(AddressNumber), _get(AddressNumber_LowRange), _get(AddressNumber_HighRange),
+        _get(AddressNumber_LowRange_Left), _get(AddressNumber_HighRange_Left),
+        _get(AddressNumber_LowRange_Right), _get(AddressNumber_HighRange_Right),
+        _get(AddressNumber_Prefix), _get(AddressNumber_Suffix),
+        _get(Street_PreDirectional), _get(Street_PostDirectional), _get(Street_PostType),
+    )
+
     if FullAddress.strip() or PrimaryAddress.strip():
         combined = _get(FullAddress) or _get(PrimaryAddress)
         blended_text = strip_city_state_zip(clean_whitespace(combined.upper().replace(".", "")))
         segments = standardize_address(blended_text)["parsed_segments"]
-        number, prefix_dir, name, road_type, suffix_dir, alias = (
-            segments["address_number"], segments["prefix_directional"], segments["street_name"],
-            segments["road_type"], segments["suffix_directional"], segments["alias"],
-        )
-        if secondary_address is None:
+        # The granular fields above are the more authoritative signal (a
+        # caller that bothered to split them out already knows their exact
+        # roles, with no guesswork) -- so they win wherever supplied.
+        # FullAddress/PrimaryAddress only fills in whichever segments the
+        # granular fields left blank, e.g. a road type that's present in the
+        # combined text but was stripped out of a bare StreetName column
+        # with nowhere else to go.
+        number = number or segments["address_number"]
+        prefix_dir = prefix_dir or segments["prefix_directional"]
+        name = name or segments["street_name"]
+        road_type = road_type or segments["road_type"]
+        suffix_dir = suffix_dir or segments["suffix_directional"]
+        alias = alias or segments["alias"]
+        # Only trust the combined text's own secondary/unit split when its
+        # own address-number parse also succeeded. A "#" (e.g. "Lot #4") is
+        # ambiguous standalone -- the combined parse reads it as a secondary
+        # unit marker, which swallows the number along with it and leaves
+        # `segments["address_number"]` as None. If the granular AddressNumber
+        # already accounts for that same digit as part of the house number
+        # (e.g. "LOT 4"), blindly keeping the combined parse's "UNIT 4" would
+        # double-count it as both the house number and a separate unit.
+        if secondary_address is None and segments["address_number"] is not None:
             secondary_address = segments["secondary_address"]
-    else:
-        number, prefix_dir, name, road_type, suffix_dir, alias = _build_primary_from_parts(
-            _get(PrimaryName), _get(StreetName),
-            _get(AddressNumber), _get(AddressNumber_LowRange), _get(AddressNumber_HighRange),
-            _get(AddressNumber_LowRange_Left), _get(AddressNumber_HighRange_Left),
-            _get(AddressNumber_LowRange_Right), _get(AddressNumber_HighRange_Right),
-            _get(AddressNumber_Prefix), _get(AddressNumber_Suffix),
-            _get(Street_PreDirectional), _get(Street_PostDirectional), _get(Street_PostType),
-        )
 
     name_only = " ".join(part for part in (prefix_dir, name, road_type, suffix_dir) if part) or None
     primary_address = " ".join(part for part in (number, prefix_dir, name, road_type, suffix_dir) if part) or None
@@ -1821,6 +1870,42 @@ if __name__ == "__main__":
         out = standardize_feature_attributes({"NAME": raw}, PrimaryName="NAME")
         assert out["CLEAN_NAME"] == raw.upper(), raw
         assert out["CLEAN_Alias"] is None, raw
+
+    # FullAddress and granular fields supplied together: the granular
+    # AddressNumber/StreetName win over what the combined text would've
+    # auto-parsed for those two segments, but Street_PostType is blank on
+    # the granular side, so that gap is filled in from FullAddress -- which
+    # still has the road type the bare StreetName column stripped out.
+    out = standardize_feature_attributes(
+        {"FULL": "Lot 43 Horseshoe Circle", "NUM": "Lot 43", "NAME": "Horseshoe"},
+        FullAddress="FULL", AddressNumber="NUM", StreetName="NAME",
+    )
+    assert out["CLEAN_FULL"] == "LOT 43 HORSESHOE CIRCLE"
+    assert out["CLEAN_NUM"] == "LOT 43"
+    assert out["CLEAN_NAME"] == "HORSESHOE"
+    assert out["CLEAN_Street_PostType"] == "CIRCLE"
+
+    # Same combination, but where the combined text's own address-number
+    # parsing would otherwise misfire (the "#" in "Lot #4" is ordinarily
+    # read as a secondary-unit marker, stripping the number entirely out of
+    # FullAddress's own parse) -- the granular AddressNumber still wins and
+    # avoids that, while the road type is still filled in from FullAddress.
+    out = standardize_feature_attributes(
+        {
+            "FULL": "Lot #4 Cottage Hill Road Lane",
+            "NUM": "Lot #4",
+            "NAME": "Cottage Hill Road",
+        },
+        FullAddress="FULL", AddressNumber="NUM", StreetName="NAME",
+    )
+    assert out["CLEAN_NUM"] == "LOT 4"
+    assert out["CLEAN_NAME"] == "COTTAGE HILL ROAD"
+    assert out["CLEAN_Street_PostType"] == "LANE"
+    # The combined parse's own address-number extraction failed here (the
+    # "#" got read as a secondary-unit marker instead), so its "UNIT 4"
+    # secondary-address reading is discarded rather than double-counting
+    # the same "4" as both the house number and a separate unit.
+    assert out["CLEAN_AddressSecondaryAddress"] is None
 
     # No address-role attributes configured at all -> graceful empty
     # result, never an error (no combination is a strict requirement).
