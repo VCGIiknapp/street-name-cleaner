@@ -61,6 +61,32 @@ The rule: when a single letter immediately follows the address number,
   the letter is instead treated as a stand-alone single-letter street name
   (e.g. `26 G St` -> address number `26`, street name `G STREET`).
 
+## Known limitations
+
+**Ranged addresses are preserved whole, never split into separate records.**
+A multi-unit building is sometimes addressed with an address-number *range*
+rather than a single number -- e.g. `83-85 Anderson Pkwy` (two units, 83 and
+85, sharing one parcel) or `6A-6D Lake Street` (four units, 6A/6B/6C/6D).
+This module recognizes that pattern as a single address number and keeps it
+intact (`83-85 ANDERSON PARKWAY`, `6A-6D LAKE STREET`) -- it does **not**
+expand the range or infer which numbers actually fall inside it. In
+particular, it has no way to tell from the text alone whether a range like
+`83-85` means every number in between, or only the odd (or only the even)
+numbers -- that convention varies by town and by dataset, and isn't
+recoverable from the string itself.
+
+If your source data needs one row per individual unit/address number (e.g.
+for E911 dispatch, where each unit needs its own point), expand any ranged
+addresses into separate records **before** running them through this
+module. There is no field combination -- combined text or granular,
+including `AddressNumber_LowRange`/`AddressNumber_HighRange` -- that causes
+this module to emit multiple records from one input row; every path folds
+a range down to one combined address-number value per record it's given
+(e.g. `AddressNumber_LowRange="83"` + `AddressNumber_HighRange="85"` still
+produces a single `CLEAN_AddressNumber` of `83-85`, not two output
+features). Row expansion has to happen upstream, before this module sees
+the data.
+
 ## Usage
 
 The module's filename (`street-name-cleaner.py`) uses hyphens, which aren't

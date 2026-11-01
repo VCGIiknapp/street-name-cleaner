@@ -271,6 +271,17 @@ def extract_address_number(text: str) -> tuple[Optional[str], str]:
         number = _merge_address_number_parts(prefix, f"{match.group(1)} {match.group(2)}", "")
         return number, body[match.end():]
 
+    # Address-number range, e.g. "83-85 Anderson Pkwy" or "6A-6D Lake St" ->
+    # address number "83-85" / "6A-6D" (some multi-unit buildings share one
+    # parcel addressed as a range). Requires a real number on *both* sides of
+    # the hyphen -- "28-A" (a single alphanumeric suffix, handled below
+    # instead) doesn't qualify, since its right-hand side has no digit of its
+    # own.
+    match = re.match(r"^(\d+[A-Za-z]?)\s*-\s*(\d+[A-Za-z]?)\b\s*", body)
+    if match:
+        number = _merge_address_number_parts(prefix, f"{match.group(1)}-{match.group(2)}", "")
+        return number, body[match.end():]
+
     # Alphanumeric, e.g. "28-A" / "28 A" -> "28A". A lone N/S/E/W is never
     # merged in here since that's a directional word, not a unit letter,
     # and neither is a letter that's actually a stand-alone single-letter
@@ -1417,6 +1428,12 @@ if __name__ == "__main__":
          "OLD ROUTE 110"),
         ("VT Route 7B N Ext",
          "VT ROUTE 7B N EXTENSION"),
+        ("83-85 Anderson Pkwy",
+         "83-85 ANDERSON PARKWAY"),
+        ("33 - 35 Bright Street",
+         "33-35 BRIGHT STREET"),
+        ("6A-6D Lake Street",
+         "6A-6D LAKE STREET"),
     ]
 
     for raw, expected_full in cases:
